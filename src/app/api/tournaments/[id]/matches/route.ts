@@ -28,9 +28,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   const oid = toObjectId(id);
   if (!oid) return NextResponse.json({ error: "Invalid tournament ID." }, { status: 400 });
+  const tournamentOid = oid;
 
   const { tournaments, registrations, teams, matches } = await getCollections();
-  const t = await tournaments.findOne({ _id: oid });
+  const t = await tournaments.findOne({ _id: tournamentOid });
   if (!t) return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
 
   const actor = await getSessionActor(String(t.guildId));
@@ -56,8 +57,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (t!.mode === "team") {
       const byId = toObjectId(raw);
       const tm = byId
-        ? await teams.findOne({ _id: byId, tournamentId: oid, status: "active" })
-        : await teams.findOne({ tournamentId: oid, nameLower: raw.toLowerCase(), status: "active" });
+        ? await teams.findOne({ _id: byId, tournamentId: tournamentOid, status: "active" })
+        : await teams.findOne({ tournamentId: tournamentOid, nameLower: raw.toLowerCase(), status: "active" });
       if (!tm) throw new Error(`Active team "${raw}" not found.`);
       return {
         ids: (Array.isArray(tm.memberIds) ? tm.memberIds : []).map((x: unknown) => String(x)),
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .filter(Boolean);
     if (!ids.length) throw new Error("Enter registered Discord User ID(s).");
     for (const uid of ids) {
-      const r = await registrations.findOne({ tournamentId: oid, userId: uid, status: "registered" });
+      const r = await registrations.findOne({ tournamentId: tournamentOid, userId: uid, status: "registered" });
       if (!r) throw new Error(`Player ${uid} is not registered.`);
     }
     return { ids, teamId: null, power: 0, bracketId };
@@ -91,11 +92,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: "A player cannot be assigned to both sides." }, { status: 400 });
   }
 
-  const last = await matches.find({ tournamentId: oid }).sort({ matchNumber: -1 }).limit(1).toArray();
+  const last = await matches.find({ tournamentId: tournamentOid }).sort({ matchNumber: -1 }).limit(1).toArray();
   const nextNo = (last[0]?.matchNumber || 0) + 1;
   const roundNo = Number(body.roundNumber || last[0]?.roundNumber || 1);
 
   const created = await createMatchRecord(t, a, b, nextNo, roundNo, bracketId);
+  const createdId: ObjectId = created._id;
   const updates: Record<string, unknown> = {};
   if (mapName) updates.mapName = mapName;
   if (scheduledAt && !Number.isNaN(scheduledAt.getTime())) {
@@ -104,15 +106,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     updates.deadlineAt = new Date(scheduledAt.getTime() + deadlineHrs * 3600 * 1000);
   }
   if (Object.keys(updates).length) {
-    await matches.updateOne({ _id: created._id }, { $set: updates });
+    await matches.updateOne({ _id: createdId }, { $set: updates });
   }
 
-  await writeAudit(String(t.guildId), actor!.discordId, "match.create", "Match", created._id as ObjectId, {
+  await writeAudit(String(t.guildId), actor!.discordId, "match.create", "Match", createdId, {
     sideA: a.ids,
     sideB: b.ids,
     mapName,
   });
 
-  const finalDoc = await matches.findOne({ _id: created._id });
+  const finalDoc = await matches.findOne({ _id: createdId });
   return NextResponse.json({ match: serializeDoc(finalDoc) }, { status: 201 });
 }

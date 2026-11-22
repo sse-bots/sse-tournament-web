@@ -18,9 +18,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   const oid = toObjectId(id);
   if (!oid) return NextResponse.json({ error: "Invalid tournament ID." }, { status: 400 });
+  const tournamentOid = oid;
 
   const { tournaments, registrations, teams, matches } = await getCollections();
-  const t = await tournaments.findOne({ _id: oid });
+  const t = await tournaments.findOne({ _id: tournamentOid });
   if (!t) return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
 
   const actor = await getSessionActor(String(t.guildId));
@@ -34,11 +35,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (action === "create") {
     if (t.mode !== "team") return NextResponse.json({ error: "This is an individual tournament." }, { status: 400 });
     if (t.status !== "registration" || t.teamsLocked) return NextResponse.json({ error: "Team registration is closed." }, { status: 409 });
-    const reg = await registrations.findOne({ tournamentId: oid, userId: uid, status: "registered" });
+    const reg = await registrations.findOne({ tournamentId: tournamentOid, userId: uid, status: "registered" });
     if (!reg) return NextResponse.json({ error: "Register and submit squad-power proof first." }, { status: 400 });
     if (!t.allowMultipleTeams) {
       const existingTeam = await teams.findOne({
-        tournamentId: oid,
+        tournamentId: tournamentOid,
         memberIds: uid,
         status: { $nin: ["disqualified", "disbanded"] },
       });
@@ -50,12 +51,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (logoUrl && !/^https:\/\//i.test(logoUrl)) {
       return NextResponse.json({ error: "Logo URL must start with https://" }, { status: 400 });
     }
-    const dup = await teams.findOne({ tournamentId: oid, nameLower: name.toLowerCase(), status: "active" });
+    const dup = await teams.findOne({ tournamentId: tournamentOid, nameLower: name.toLowerCase(), status: "active" });
     if (dup) return NextResponse.json({ error: "A team with that name already exists." }, { status: 409 });
 
     const doc: Record<string, unknown> = {
       guildId: String(t.guildId),
-      tournamentId: oid,
+      tournamentId: tournamentOid,
       name,
       nameLower: name.toLowerCase(),
       captainId: uid,
@@ -76,17 +77,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const teamId = toObjectId(body.teamId);
   const targetTeam = teamId
-    ? await teams.findOne({ _id: teamId, tournamentId: oid })
+    ? await teams.findOne({ _id: teamId, tournamentId: tournamentOid })
     : body.teamName
-      ? await teams.findOne({ tournamentId: oid, nameLower: String(body.teamName).toLowerCase(), status: "active" })
+      ? await teams.findOne({ tournamentId: tournamentOid, nameLower: String(body.teamName).toLowerCase(), status: "active" })
       : null;
 
   if (!targetTeam) return NextResponse.json({ error: "Team not found." }, { status: 404 });
 
   async function syncRemovedMemberReg(memberUid: string, removedTeamId: ObjectId) {
-    const reg = await registrations.findOne({ tournamentId: oid, userId: memberUid });
+    const reg = await registrations.findOne({ tournamentId: tournamentOid, userId: memberUid });
     if (!reg) return;
-    const remainingIds = (reg.teamIds || []).filter((x: ObjectId) => String(x) !== removedTeamId.toHexString());
+    const remainingIds = (Array.isArray(reg.teamIds) ? reg.teamIds : []).filter(
+      (x: ObjectId) => String(x) !== removedTeamId.toHexString()
+    );
     const activeOther = remainingIds.length
       ? await teams.find({ _id: { $in: remainingIds }, status: "active", memberIds: memberUid }).toArray()
       : [];
@@ -100,11 +103,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (t.mode !== "team" || t.status !== "registration" || t.teamsLocked) {
       return NextResponse.json({ error: "Team registration is locked." }, { status: 409 });
     }
-    const reg = await registrations.findOne({ tournamentId: oid, userId: uid, status: "registered" });
+    const reg = await registrations.findOne({ tournamentId: tournamentOid, userId: uid, status: "registered" });
     if (!reg) return NextResponse.json({ error: "Register for this tournament first." }, { status: 400 });
     if (!t.allowMultipleTeams) {
       const existing = await teams.findOne({
-        tournamentId: oid,
+        tournamentId: tournamentOid,
         memberIds: uid,
         status: { $nin: ["disqualified", "disbanded"] },
       });
@@ -138,7 +141,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (t.teamsLocked || t.status !== "registration") return NextResponse.json({ error: "Team changes are locked." }, { status: 409 });
     const targetUserId = String(body.targetUserId || "").trim();
     if (!targetUserId) return NextResponse.json({ error: "Target player Discord ID required." }, { status: 400 });
-    const targetReg = await registrations.findOne({ tournamentId: oid, userId: targetUserId, status: "registered" });
+    const targetReg = await registrations.findOne({ tournamentId: tournamentOid, userId: targetUserId, status: "registered" });
     if (!targetReg) return NextResponse.json({ error: "Target player must register for the tournament first." }, { status: 400 });
     if ((targetTeam.memberIds || []).length >= Number(t.teamSizeMax || 5)) {
       return NextResponse.json({ error: "Team is already full." }, { status: 409 });
@@ -215,11 +218,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!outgoingId || !incomingId || !reason) return NextResponse.json({ error: "outgoingId, incomingId, and reason are required." }, { status: 400 });
     if (!(targetTeam.memberIds || []).includes(outgoingId)) return NextResponse.json({ error: "Outgoing player not on team." }, { status: 400 });
     if (outgoingId === String(targetTeam.captainId)) return NextResponse.json({ error: "Transfer captaincy before substituting captain." }, { status: 400 });
-    const incomingReg = await registrations.findOne({ tournamentId: oid, userId: incomingId, status: "registered" });
+    const incomingReg = await registrations.findOne({ tournamentId: tournamentOid, userId: incomingId, status: "registered" });
     if (!incomingReg) return NextResponse.json({ error: "Incoming player must be registered." }, { status: 400 });
 
     const activeMatch = await matches.findOne({
-      tournamentId: oid,
+      tournamentId: tournamentOid,
       status: { $in: ["in_progress", "pending_review", "disputed"] },
       $or: [
         { sideATeamId: targetTeam._id, sideAUserIds: outgoingId },
@@ -237,7 +240,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const upcoming = await matches
       .find({
-        tournamentId: oid,
+        tournamentId: tournamentOid,
         status: { $in: ["scheduled", "ready", "postponed"] },
         $or: [
           { sideATeamId: targetTeam._id, sideAUserIds: outgoingId },
