@@ -1,17 +1,19 @@
 "use client";
 
 import { createAuthClient } from "better-auth/react";
+import { genericOAuthClient } from "better-auth/client/plugins";
 
 export const authClient = createAuthClient({
   baseURL:
     typeof window !== "undefined"
       ? window.location.origin
       : process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+  plugins: [genericOAuthClient()],
 });
 
 export async function signInWithNexus(callbackURL: string = "/") {
-  return authClient.signIn.social({
-    provider: "sse-nexus",
+  return authClient.signIn.oauth2({
+    providerId: "sse-nexus",
     callbackURL,
   });
 }

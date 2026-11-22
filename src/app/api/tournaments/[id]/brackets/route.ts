@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ObjectId, Document } from "mongodb";
+import { ObjectId, Document, UpdateFilter } from "mongodb";
 import { getCollections, toObjectId, serializeDoc, writeAudit } from "@/lib/mongo";
 import { getSessionActor, canManageTournament } from "@/lib/permissions";
 import { bracketRangesOverlap } from "@/lib/tournament-engine";
@@ -63,7 +63,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     placementRules: "standard",
     displayOrder: existing.length + 1,
   };
-  await tournaments.updateOne({ _id: oid }, { $push: { brackets: bracket } as Document });
+  await tournaments.updateOne({ _id: oid }, { $push: { brackets: bracket } } as UpdateFilter<Document>);
   await writeAudit(String(t.guildId), actor!.discordId, "bracket.add", "Tournament", oid, {
     bracket: name,
     min: minPower,
@@ -96,7 +96,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!userId || !bracketId || !reason) {
       return NextResponse.json({ error: "userId, bracketId, and reason are required." }, { status: 400 });
     }
-    const target = (t.brackets || []).find((b: Document) => String(b._id) === bracketId.toHexString());
+    const target = (Array.isArray(t.brackets) ? t.brackets : []).find(
+      (b: Document) => String(b._id) === bracketId.toHexString()
+    );
     if (!target) return NextResponse.json({ error: "Bracket not found." }, { status: 404 });
     const reg = await registrations.findOne({ tournamentId: oid, userId, status: "registered" });
     if (!reg) return NextResponse.json({ error: "Registered player not found." }, { status: 404 });
@@ -136,7 +138,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       : body.maxPower === "" || body.maxPower === null
         ? null
         : Number(body.maxPower);
-  const order = body.displayOrder !== undefined ? Number(body.displayOrder) : curr.displayOrder ?? idx + 1;
+  const order = body.displayOrder !== undefined ? Number(body.displayOrder) : Number(curr.displayOrder ?? idx + 1);
 
   if (hi !== null && hi < lo) return NextResponse.json({ error: "maxPower cannot be below minPower." }, { status: 400 });
   if (
@@ -149,7 +151,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
 
   brackets[idx] = { ...curr, name: newName, minPower: lo, maxPower: hi, displayOrder: order };
-  brackets.sort((a, b) => (a.displayOrder ?? 999) - (b.displayOrder ?? 999) || a.minPower - b.minPower);
+  brackets.sort(
+    (a, b) =>
+      Number(a.displayOrder ?? 999) - Number(b.displayOrder ?? 999) ||
+      Number(a.minPower ?? 0) - Number(b.minPower ?? 0)
+  );
 
   await tournaments.updateOne({ _id: oid }, { $set: { brackets, updatedAt: new Date() } });
   await writeAudit(String(t.guildId), actor!.discordId, "bracket.edit", "Tournament", oid, {
@@ -179,7 +185,10 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     return NextResponse.json({ error: "Brackets are locked after start." }, { status: 409 });
   }
 
-  await tournaments.updateOne({ _id: oid }, { $pull: { brackets: { _id: bracketId } } as Document });
+  await tournaments.updateOne(
+    { _id: oid },
+    { $pull: { brackets: { _id: bracketId } } } as UpdateFilter<Document>
+  );
   await writeAudit(String(t.guildId), actor!.discordId, "bracket.delete", "Tournament", oid, {
     bracketId: bracketId.toHexString(),
   });

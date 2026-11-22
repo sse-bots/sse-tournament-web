@@ -185,10 +185,13 @@ export async function POST(
     await matches.updateOne({ _id: mid }, { $set: changes });
 
     if (action === "approve") {
-      const updatedM = { ...m, ...changes };
-      await applyResultScore(t, updatedM, m.reportedWinnerSide);
-      await advanceSeriesIfNeeded(t, updatedM);
-      await advanceTournamentIfReady(t, Number(m.roundNumber || 1));
+      const reportedSide = String(m.reportedWinnerSide || "");
+      if (reportedSide === "A" || reportedSide === "B" || reportedSide === "DRAW") {
+        const updatedM = { ...m, ...changes };
+        await applyResultScore(t, updatedM, reportedSide);
+        await advanceSeriesIfNeeded(t, updatedM);
+        await advanceTournamentIfReady(t, Number(m.roundNumber || 1));
+      }
     }
     await writeAudit(String(t.guildId), actor.discordId, `match.${action}`, "Match", mid, { note });
     return NextResponse.json({ ok: true, match: serializeDoc(await matches.findOne({ _id: mid })) });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ObjectId } from "mongodb";
+import { Document, ObjectId, WithId } from "mongodb";
 import { getCollections, toObjectId, serializeDoc, writeAudit } from "@/lib/mongo";
 import { getSessionActor, canManageTournament } from "@/lib/permissions";
 import { rankRegistrationRows, teamRecordStats, teamVerifiedPower } from "@/lib/tournament-engine";
@@ -140,7 +140,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         const tq: Record<string, unknown> = { tournamentId: oid, status: "active" };
         if (grp.id) tq.bracketId = grp.id;
         const teamDocs = await teams.find(tq).toArray();
-        const rows = [];
+        const rows: Array<{
+          team: WithId<Document>;
+          wins: number;
+          losses: number;
+          points: number;
+          played: number;
+          pct: number;
+          pwr: number;
+        }> = [];
         for (const tm of teamDocs) {
           const st = await teamRecordStats(t, tm, grp.id);
           const pwr = await teamVerifiedPower(t, tm);
@@ -161,7 +169,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           finalSnapshot.push({
             bracket: grp.name,
             place: idx + 1,
-            teamId: (row.team._id as ObjectId).toHexString(),
+            teamId: row.team._id.toHexString(),
             teamName: row.team.name,
             wins: row.wins,
             losses: row.losses,
@@ -215,18 +223,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   if (action === "clone") {
     const newName = String(body.newName || `${t.name} (Copy)`).trim();
-    const {
-      _id: _omit,
-      createdAt: _c,
-      startedAt: _s,
-      completedAt: _co,
-      generatedRoundKeys: _g,
-      bracketChampions: _bc,
-      finalStandings: _fs,
-      finalStandingsFrozenAt: _fsa,
-      championDeclaredAt: _cd,
-      ...rest
-    } = t;
+    const rest: Record<string, unknown> = { ...t };
+    for (const key of [
+      "_id",
+      "createdAt",
+      "updatedAt",
+      "startedAt",
+      "completedAt",
+      "generatedRoundKeys",
+      "bracketChampions",
+      "finalStandings",
+      "finalStandingsFrozenAt",
+      "championDeclaredAt",
+    ]) {
+      delete rest[key];
+    }
     const cloned = {
       ...rest,
       name: newName,
@@ -235,7 +246,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       settingsLocked: false,
       teamsLocked: false,
       standingsFrozen: false,
-      brackets: (t.brackets || []).map((b: Record<string, unknown>) => ({ ...b, _id: new ObjectId() })),
+      brackets: (Array.isArray(t.brackets) ? t.brackets : []).map((b: Record<string, unknown>) => ({
+        ...b,
+        _id: new ObjectId(),
+      })),
       createdBy: actor!.discordId,
       createdAt: now,
     };
@@ -243,7 +257,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     await writeAudit(String(t.guildId), actor!.discordId, "tournament.clone", "Tournament", res.insertedId, {
       source: oid.toHexString(),
     });
-    return NextResponse.json({ ok: true, tournament: serializeDoc({ ...cloned, _id: res.insertedId }) }, { status: 201 });
+    return NextResponse.json(
+      { ok: true, tournament: serializeDoc({ ...cloned, _id: res.insertedId }) },
+      { status: 201 }
+    );
   }
 
   return NextResponse.json({ error: "Unknown lifecycle action." }, { status: 400 });
