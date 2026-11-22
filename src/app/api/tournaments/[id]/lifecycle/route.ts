@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Document, ObjectId, WithId } from "mongodb";
 import { getCollections, toObjectId, serializeDoc, writeAudit } from "@/lib/mongo";
 import { getSessionActor, canManageTournament } from "@/lib/permissions";
+import { enqueueBotEvent } from "@/lib/bot-sync";
 import { rankRegistrationRows, teamRecordStats, teamVerifiedPower } from "@/lib/tournament-engine";
 
 export const dynamic = "force-dynamic";
@@ -47,6 +48,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { $set: { status: "registration", registrationOpenedAt: now, teamsLocked: false, updatedAt: now } }
     );
     await writeAudit(String(t.guildId), actor!.discordId, "registration.open", "Tournament", oid);
+    await enqueueBotEvent({
+      guildId: String(t.guildId),
+      type: "tournament.published",
+      actorId: actor!.discordId,
+      tournamentId: oid,
+    });
     return NextResponse.json({ ok: true, status: "registration" });
   }
 
@@ -74,6 +81,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { $set: { status: "in_progress", settingsLocked: true, teamsLocked: true, startedAt: now, updatedAt: now } }
     );
     await writeAudit(String(t.guildId), actor!.discordId, "tournament.start", "Tournament", oid);
+    await enqueueBotEvent({
+      guildId: String(t.guildId),
+      type: "match.sync_channels",
+      actorId: actor!.discordId,
+      tournamentId: oid,
+    });
     return NextResponse.json({ ok: true, status: "in_progress" });
   }
 
@@ -189,6 +202,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           finishedWithUnresolvedMatches: totalPending > 0,
           finalStandings: finalSnapshot,
           finalStandingsFrozenAt: now,
+          finalAnnouncementSent: false,
           updatedAt: now,
         },
       }
@@ -197,6 +211,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       force: Boolean(body.force),
       pending: totalPending,
       placements: finalSnapshot.length,
+    });
+    await enqueueBotEvent({
+      guildId: String(t.guildId),
+      type: "tournament.finished",
+      actorId: actor!.discordId,
+      tournamentId: oid,
     });
     return NextResponse.json({ ok: true, status: "completed", finalStandings: finalSnapshot });
   }
@@ -234,6 +254,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       "bracketChampions",
       "finalStandings",
       "finalStandingsFrozenAt",
+      "finalAnnouncementSent",
+      "finalAnnouncementSentAt",
       "championDeclaredAt",
     ]) {
       delete rest[key];

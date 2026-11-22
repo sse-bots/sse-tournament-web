@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCollections, toObjectId, serializeDoc, writeAudit } from "@/lib/mongo";
 import { getSessionActor } from "@/lib/permissions";
+import { enqueueBotEvent } from "@/lib/bot-sync";
 
 export const dynamic = "force-dynamic";
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const actor = await getSessionActor();
   if (!actor) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+
   const { id } = await params;
   const oid = toObjectId(id);
   if (!oid) return NextResponse.json({ error: "Invalid ticket ID." }, { status: 400 });
@@ -22,7 +24,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const isOwner = String(ticket.userId) === actor.discordId;
 
   if (action !== "close" && isOwner && !actor.isBotAdmin) {
-    return NextResponse.json({ error: "Support staff permission required for this action." }, { status: 403 });
+    return NextResponse.json(
+      { error: "Support staff permission required for this action." },
+      { status: 403 }
+    );
   }
 
   const map: Record<string, Record<string, unknown>> = {
@@ -37,6 +42,17 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (!changes) return NextResponse.json({ error: "Unknown ticket action." }, { status: 400 });
 
   await tickets.updateOne({ _id: oid }, { $set: changes });
-  await writeAudit(String(ticket.guildId), actor.discordId, `support.${action}`, "Ticket", oid, { note });
+  await writeAudit(String(ticket.guildId), actor.discordId, `support.${action}`, "Ticket", oid, {
+    note,
+  });
+
+  await enqueueBotEvent({
+    guildId: String(ticket.guildId),
+    type: "support.ticket_updated",
+    actorId: actor.discordId,
+    ticketId: oid,
+    payload: { action, note },
+  });
+
   return NextResponse.json({ ticket: serializeDoc(await tickets.findOne({ _id: oid })) });
 }

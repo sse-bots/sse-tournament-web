@@ -58,6 +58,7 @@ export async function getCollections() {
     guildConfig: db.collection("guild_config"),
     seriesRecords: db.collection("series_records"),
     availability: db.collection("availability"),
+    webBotEvents: db.collection("web_bot_events"),
   };
 }
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCollections, toObjectId, serializeDoc, serializeDocs, writeAudit } from "@/lib/mongo";
 import { getSessionActor, canManageTournament, canReviewTournamentResult } from "@/lib/permissions";
+import { enqueueBotEvent } from "@/lib/bot-sync";
 
 export const dynamic = "force-dynamic";
 
@@ -25,11 +26,20 @@ export async function GET(
     m.sideATeamId ? teams.findOne({ _id: m.sideATeamId }) : null,
     m.sideBTeamId ? teams.findOne({ _id: m.sideBTeamId }) : null,
     registrations
-      .find({ tournamentId: tid, userId: { $in: [...(m.sideAUserIds || []), ...(m.sideBUserIds || [])] } })
+      .find({
+        tournamentId: tid,
+        userId: { $in: [...(m.sideAUserIds || []), ...(m.sideBUserIds || [])] },
+      })
       .toArray(),
-    auditLogs.find({ targetType: "Match", targetId: mid.toHexString() }).sort({ createdAt: -1 }).limit(40).toArray(),
+    auditLogs
+      .find({ targetType: "Match", targetId: mid.toHexString() })
+      .sort({ createdAt: -1 })
+      .limit(40)
+      .toArray(),
     getSessionActor(String(t.guildId)),
-    m.seriesId ? matches.find({ seriesId: m.seriesId }).sort({ seriesIndex: 1 }).toArray() : Promise.resolve([]),
+    m.seriesId
+      ? matches.find({ seriesId: m.seriesId }).sort({ seriesIndex: 1 }).toArray()
+      : Promise.resolve([]),
   ]);
 
   const manageCheck = await canManageTournament(actor, t);
@@ -80,11 +90,15 @@ export async function PATCH(
   if (!check.allowed) return NextResponse.json({ error: check.reason }, { status: 403 });
 
   if (["approved", "forfeited", "cancelled"].includes(String(m.status))) {
-    return NextResponse.json({ error: "Finalized matches cannot be edited or rescheduled." }, { status: 409 });
+    return NextResponse.json(
+      { error: "Finalized matches cannot be edited or rescheduled." },
+      { status: 409 }
+    );
   }
 
   const body = await req.json();
   const updates: Record<string, unknown> = { editedBy: actor!.discordId, editedAt: new Date() };
+  let scheduledDate: Date | null = null;
 
   if (body.mapName !== undefined && String(body.mapName).trim()) {
     updates.mapName = String(body.mapName).trim();
@@ -94,7 +108,10 @@ export async function PATCH(
   }
   if (body.scheduledAt) {
     const when = new Date(body.scheduledAt);
-    if (Number.isNaN(when.getTime())) return NextResponse.json({ error: "Invalid schedule timestamp." }, { status: 400 });
+    if (Number.isNaN(when.getTime())) {
+      return NextResponse.json({ error: "Invalid schedule timestamp." }, { status: 400 });
+    }
+    scheduledDate = when;
     const deadlineHrs = Number(t.schedule?.matchDeadlineHours || 48);
     updates.scheduledAt = when;
     updates.deadlineAt = body.deadlineAt
@@ -103,13 +120,20 @@ export async function PATCH(
     updates.rescheduleReason = String(body.reason || "Updated via Web Arena");
     updates.rescheduledBy = actor!.discordId;
     updates.rescheduledAt = new Date();
+    updates.reminderSent = false;
+    updates.overdueWarned = false;
+    updates.deadlineWarned = false;
+    updates.deadlineApproachWarned = false;
   } else if (body.deadlineAt) {
     const dl = new Date(body.deadlineAt);
     if (!Number.isNaN(dl.getTime())) updates.deadlineAt = dl;
   }
 
-  if (body.status && ["scheduled", "ready", "in_progress", "pending_proof", "postponed"].includes(String(body.status))) {
-    updates.status = body.status;
+  if (
+    body.status &&
+    ["scheduled", "ready", "in_progress", "pending_proof", "postponed"].includes(String(body.status))
+  ) {
+    updates.status = String(body.status);
     updates.statusNote = String(body.note || "");
     updates.statusChangedAt = new Date();
     updates.statusChangedBy = actor!.discordId;
@@ -117,6 +141,21 @@ export async function PATCH(
 
   await matches.updateOne({ _id: mid }, { $set: updates });
   await writeAudit(String(t.guildId), actor!.discordId, "match.edit", "Match", mid, updates);
+
+  await enqueueBotEvent({
+    guildId: String(t.guildId),
+    type: "match.rescheduled",
+    actorId: actor!.discordId,
+    tournamentId: tid,
+    matchId: mid,
+    payload: {
+      mapName: String(updates.mapName || m.mapName || ""),
+      status: String(updates.status || m.status || ""),
+      scheduledAt: scheduledDate ? scheduledDate.toISOString() : null,
+      reason: String(updates.rescheduleReason || updates.statusNote || ""),
+    },
+  });
+
   const fresh = await matches.findOne({ _id: mid });
   return NextResponse.json({ match: serializeDoc(fresh) });
 }
