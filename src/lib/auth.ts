@@ -67,7 +67,6 @@ function createAuthInstance() {
               `${nexusBase}/api/auth/oauth2/userinfo`,
             scopes: nexusScopes,
             pkce: true,
-            disableProviderLogout: true,
             mapProfileToUser: (profile) => {
               const raw = profile as unknown as Record<string, unknown>;
               const discordId = String(
