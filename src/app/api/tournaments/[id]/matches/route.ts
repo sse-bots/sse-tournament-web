@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getCollections, toObjectId, serializeDoc, serializeDocs, writeAudit } from "@/lib/mongo";
 import { getSessionActor, canManageTournament } from "@/lib/permissions";
-import { createMatchRecord, teamVerifiedPower } from "@/lib/tournament-engine";
+import { createMatchRecord, teamVerifiedPower, EntrantSeed } from "@/lib/tournament-engine";
 
 export const dynamic = "force-dynamic";
 
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: "Select a bracket for this match." }, { status: 400 });
   }
 
-  async function resolveSide(raw: string) {
+  async function resolveSide(raw: string): Promise<EntrantSeed> {
     if (t!.mode === "team") {
       const byId = toObjectId(raw);
       const tm = byId
@@ -60,13 +60,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         : await teams.findOne({ tournamentId: oid, nameLower: raw.toLowerCase(), status: "active" });
       if (!tm) throw new Error(`Active team "${raw}" not found.`);
       return {
-        ids: (tm.memberIds || []).map(String),
+        ids: (Array.isArray(tm.memberIds) ? tm.memberIds : []).map((x: unknown) => String(x)),
         teamId: tm._id as ObjectId,
         power: await teamVerifiedPower(t!, tm),
         bracketId,
       };
     }
-    const ids = raw.split(",").map((x) => x.trim()).filter(Boolean);
+    const ids = raw
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
     if (!ids.length) throw new Error("Enter registered Discord User ID(s).");
     for (const uid of ids) {
       const r = await registrations.findOne({ tournamentId: oid, userId: uid, status: "registered" });
@@ -75,7 +78,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return { ids, teamId: null, power: 0, bracketId };
   }
 
-  let a, b;
+  let a: EntrantSeed;
+  let b: EntrantSeed;
   try {
     a = await resolveSide(sideARaw);
     b = await resolveSide(sideBRaw);
@@ -83,7 +87,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: (err as Error).message }, { status: 400 });
   }
 
-  if (a.ids.some((u) => b.ids.includes(u))) {
+  if (a.ids.some((u: string) => b.ids.includes(u))) {
     return NextResponse.json({ error: "A player cannot be assigned to both sides." }, { status: 400 });
   }
 
