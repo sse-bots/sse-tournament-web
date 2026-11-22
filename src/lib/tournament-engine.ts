@@ -1,4 +1,4 @@
-import { ObjectId, Document } from "mongodb";
+import { ObjectId, Document, WithId } from "mongodb";
 import { getCollections, writeAudit } from "./mongo";
 
 export function parsePowerAverage(valuesText: string): { values: number[]; average: number } {
@@ -368,7 +368,11 @@ export async function buildEligibleEntrants(tournament: Document): Promise<Entra
       if (members.length < minAllowed || members.length > maxAllowed) continue;
 
       const memberRegs = members.map((uid) => regs.find((r) => String(r.userId) === String(uid)));
-      if (memberRegs.some((r) => !r || r.verifiedSquadPower === null || r.verifiedSquadPower === undefined)) {
+      if (
+        memberRegs.some(
+          (r) => !r || r.verifiedSquadPower === null || r.verifiedSquadPower === undefined
+        )
+      ) {
         continue;
       }
       const powers = memberRegs.map((r) => Number(r!.verifiedSquadPower));
@@ -425,7 +429,7 @@ export async function createMatchRecord(
   roundNumber: number,
   bracketId: ObjectId | null,
   seriesMeta?: { seriesId: string; seriesIndex: number; seriesBestOf: number }
-) {
+): Promise<WithId<Document>> {
   const { matches, registrations } = await getCollections();
   const existing = await matches.findOne({ tournamentId: tournament._id, matchNumber });
   if (existing) return existing;
@@ -435,7 +439,7 @@ export async function createMatchRecord(
       ? tournament.maps
       : ["To be announced"];
 
-  const doc: Record<string, unknown> = {
+  const doc: Document = {
     guildId: String(tournament.guildId),
     tournamentId: tournament._id,
     matchNumber,
@@ -468,19 +472,17 @@ export async function createMatchRecord(
     doc.reviewedAt = new Date();
     doc.reviewNote = "Automatic bye";
     const res = await matches.insertOne(doc);
-    doc._id = res.insertedId;
     for (const uid of a.ids) {
       await registrations.updateOne(
         { tournamentId: tournament._id, userId: uid },
         { $inc: { wins: 1, points: 3 } }
       );
     }
-    return doc;
+    return { ...doc, _id: res.insertedId };
   }
 
   const res = await matches.insertOne(doc);
-  doc._id = res.insertedId;
-  return doc;
+  return { ...doc, _id: res.insertedId };
 }
 
 export async function advanceSeriesIfNeeded(tournament: Document, matchDoc: Document) {
