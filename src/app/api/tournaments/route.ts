@@ -113,7 +113,12 @@ export async function POST(req: NextRequest) {
     const game = await games.findOne({ _id: gameId, guildId, active: true });
     if (!game) return NextResponse.json({ error: "Selected game not found in this server." }, { status: 404 });
 
-    const gcfg = (await guildConfig.findOne({ guildId })) || {};
+    const gcfg = await guildConfig.findOne({ guildId });
+    const gcfgChannels =
+      gcfg && typeof gcfg.channels === "object" && gcfg.channels !== null
+        ? (gcfg.channels as Record<string, unknown>)
+        : null;
+
     const doc = {
       guildId,
       name,
@@ -133,8 +138,8 @@ export async function POST(req: NextRequest) {
       teamSizeMin: mode === "team" ? teamSizeMin : 1,
       teamSizeMax: mode === "team" ? teamSizeMax : 1,
       teamPowerRule,
-      categoryId: gcfg.categoryId || null,
-      announcementChannelId: gcfg.channels?.announcements || null,
+      categoryId: gcfg?.categoryId ? String(gcfg.categoryId) : null,
+      announcementChannelId: gcfgChannels?.announcements ? String(gcfgChannels.announcements) : null,
       maps: [],
       schedule: { matchDeadlineHours: 48, matchDurationMinutes: 60 },
       resultPolicy: { proofRequired: true, approvalRequired: true, allowDraws: false },
