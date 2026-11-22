@@ -85,7 +85,9 @@ export function serializeValue(val: unknown): unknown {
   return val;
 }
 
-export function serializeDoc<T = Record<string, unknown>>(doc: Document | null): T | null {
+export function serializeDoc<T = Record<string, unknown>>(doc: Document): T;
+export function serializeDoc<T = Record<string, unknown>>(doc: Document | null | undefined): T | null;
+export function serializeDoc<T = Record<string, unknown>>(doc: Document | null | undefined): T | null {
   if (!doc) return null;
   return serializeValue(doc) as T;
 }
