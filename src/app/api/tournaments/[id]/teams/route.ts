@@ -67,9 +67,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     };
     if (logoUrl) doc.logoUrl = logoUrl;
     const res = await teams.insertOne(doc);
+    const prevIds: ObjectId[] = Array.isArray(reg.teamIds) ? reg.teamIds : [];
+    const nextIds = prevIds.some((x) => String(x) === res.insertedId.toHexString())
+      ? prevIds
+      : [...prevIds, res.insertedId];
     await registrations.updateOne(
       { _id: reg._id },
-      { $set: { teamId: res.insertedId }, $addToSet: { teamIds: res.insertedId } }
+      { $set: { teamId: res.insertedId, teamIds: nextIds } }
     );
     await writeAudit(String(t.guildId), uid, "team.create", "Team", res.insertedId, { name });
     return NextResponse.json({ team: serializeDoc({ ...doc, _id: res.insertedId }) }, { status: 201 });
@@ -83,6 +87,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       : null;
 
   if (!targetTeam) return NextResponse.json({ error: "Team not found." }, { status: 404 });
+
+  const currMembers: string[] = Array.isArray(targetTeam.memberIds) ? targetTeam.memberIds.map(String) : [];
+  const currInvited: string[] = Array.isArray(targetTeam.invitedIds) ? targetTeam.invitedIds.map(String) : [];
 
   async function syncRemovedMemberReg(memberUid: string, removedTeamId: ObjectId) {
     const reg = await registrations.findOne({ tournamentId: tournamentOid, userId: memberUid });
@@ -113,23 +120,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       });
       if (existing) return NextResponse.json({ error: "You already belong to a team." }, { status: 409 });
     }
-    const invited: string[] = targetTeam.invitedIds || [];
-    if (action === "accept" && !invited.includes(uid)) {
+    if (action === "accept" && !currInvited.includes(uid)) {
       return NextResponse.json({ error: "No invitation found for you on this team." }, { status: 403 });
     }
-    if (action === "join" && t.teamInvitesOnly && !invited.includes(uid)) {
+    if (action === "join" && t.teamInvitesOnly && !currInvited.includes(uid)) {
       return NextResponse.json({ error: "This tournament requires a captain invitation to join." }, { status: 403 });
     }
-    if ((targetTeam.memberIds || []).length >= Number(t.teamSizeMax || 5)) {
+    if (currMembers.length >= Number(t.teamSizeMax || 5)) {
       return NextResponse.json({ error: "Team is full." }, { status: 409 });
     }
+    const nextMembers = currMembers.includes(uid) ? currMembers : [...currMembers, uid];
+    const nextInvited = currInvited.filter((x) => x !== uid);
     await teams.updateOne(
       { _id: targetTeam._id },
-      { $addToSet: { memberIds: uid }, $pull: { invitedIds: uid } as Document }
+      { $set: { memberIds: nextMembers, invitedIds: nextInvited } }
     );
-    const upd: Document = { $addToSet: { teamIds: targetTeam._id } };
-    if (!reg.teamId) upd.$set = { teamId: targetTeam._id };
-    await registrations.updateOne({ _id: reg._id }, upd);
+    const prevRegTeams: ObjectId[] = Array.isArray(reg.teamIds) ? reg.teamIds : [];
+    const nextRegTeams = prevRegTeams.some((x) => String(x) === String(targetTeam._id))
+      ? prevRegTeams
+      : [...prevRegTeams, targetTeam._id as ObjectId];
+    await registrations.updateOne(
+      { _id: reg._id },
+      { $set: { teamIds: nextRegTeams, teamId: reg.teamId || targetTeam._id } }
+    );
     await writeAudit(String(t.guildId), uid, action === "accept" ? "team.accept_invite" : "team.join", "Team", targetTeam._id, {
       userId: uid,
     });
@@ -143,24 +156,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!targetUserId) return NextResponse.json({ error: "Target player Discord ID required." }, { status: 400 });
     const targetReg = await registrations.findOne({ tournamentId: tournamentOid, userId: targetUserId, status: "registered" });
     if (!targetReg) return NextResponse.json({ error: "Target player must register for the tournament first." }, { status: 400 });
-    if ((targetTeam.memberIds || []).length >= Number(t.teamSizeMax || 5)) {
+    if (currMembers.length >= Number(t.teamSizeMax || 5)) {
       return NextResponse.json({ error: "Team is already full." }, { status: 409 });
     }
-    await teams.updateOne({ _id: targetTeam._id }, { $addToSet: { invitedIds: targetUserId } });
+    const nextInvited = currInvited.includes(targetUserId) ? currInvited : [...currInvited, targetUserId];
+    await teams.updateOne({ _id: targetTeam._id }, { $set: { invitedIds: nextInvited } });
     return NextResponse.json({ ok: true });
   }
 
   if (action === "leave") {
     if (t.teamsLocked) return NextResponse.json({ error: "Team membership is locked." }, { status: 409 });
-    const members: string[] = targetTeam.memberIds || [];
-    if (!members.includes(uid)) return NextResponse.json({ error: "You are not on this team." }, { status: 400 });
-    if (String(targetTeam.captainId) === uid && members.length > 1) {
+    if (!currMembers.includes(uid)) return NextResponse.json({ error: "You are not on this team." }, { status: 400 });
+    if (String(targetTeam.captainId) === uid && currMembers.length > 1) {
       return NextResponse.json({ error: "Captain must transfer captaincy before leaving." }, { status: 409 });
     }
-    await teams.updateOne({ _id: targetTeam._id }, { $pull: { memberIds: uid } as Document });
-    if (members.length <= 1) {
-      await teams.updateOne({ _id: targetTeam._id }, { $set: { status: "disbanded" } });
-    }
+    const nextMembers = currMembers.filter((x) => x !== uid);
+    const updates: Document = { memberIds: nextMembers };
+    if (nextMembers.length === 0) updates.status = "disbanded";
+    await teams.updateOne({ _id: targetTeam._id }, { $set: updates });
     await syncRemovedMemberReg(uid, targetTeam._id as ObjectId);
     await writeAudit(String(t.guildId), uid, "team.leave", "Team", targetTeam._id);
     return NextResponse.json({ ok: true });
@@ -190,7 +203,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (action === "transfer_captain") {
     if (String(targetTeam.captainId) !== uid && !isManager) return NextResponse.json({ error: "Captain or manager required." }, { status: 403 });
     const newCaptainId = String(body.newCaptainId || "").trim();
-    if (!(targetTeam.memberIds || []).includes(newCaptainId)) {
+    if (!currMembers.includes(newCaptainId)) {
       return NextResponse.json({ error: "New captain must be a member of the team." }, { status: 400 });
     }
     await teams.updateOne({ _id: targetTeam._id }, { $set: { captainId: newCaptainId, captainChangedAt: new Date() } });
@@ -204,7 +217,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (String(targetTeam.captainId) !== uid && !isManager) return NextResponse.json({ error: "Captain or manager required." }, { status: 403 });
     if (t.teamsLocked && !isManager) return NextResponse.json({ error: "Only a manager can kick after team lock." }, { status: 403 });
     if (targetUserId === String(targetTeam.captainId)) return NextResponse.json({ error: "Transfer captaincy before removing captain." }, { status: 400 });
-    await teams.updateOne({ _id: targetTeam._id }, { $pull: { memberIds: targetUserId } as Document });
+    const nextMembers = currMembers.filter((x) => x !== targetUserId);
+    await teams.updateOne({ _id: targetTeam._id }, { $set: { memberIds: nextMembers } });
     await syncRemovedMemberReg(targetUserId, targetTeam._id as ObjectId);
     await writeAudit(String(t.guildId), uid, "team.kick", "Team", targetTeam._id, { playerId: targetUserId, reason });
     return NextResponse.json({ ok: true });
@@ -216,7 +230,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const incomingId = String(body.incomingId || "").trim();
     const reason = String(body.reason || "").trim();
     if (!outgoingId || !incomingId || !reason) return NextResponse.json({ error: "outgoingId, incomingId, and reason are required." }, { status: 400 });
-    if (!(targetTeam.memberIds || []).includes(outgoingId)) return NextResponse.json({ error: "Outgoing player not on team." }, { status: 400 });
+    if (!currMembers.includes(outgoingId)) return NextResponse.json({ error: "Outgoing player not on team." }, { status: 400 });
     if (outgoingId === String(targetTeam.captainId)) return NextResponse.json({ error: "Transfer captaincy before substituting captain." }, { status: 400 });
     const incomingReg = await registrations.findOne({ tournamentId: tournamentOid, userId: incomingId, status: "registered" });
     if (!incomingReg) return NextResponse.json({ error: "Incoming player must be registered." }, { status: 400 });
@@ -231,12 +245,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
     if (activeMatch) return NextResponse.json({ error: "Resolve this player's active/pending match before substituting." }, { status: 409 });
 
-    await teams.updateOne({ _id: targetTeam._id }, { $pull: { memberIds: outgoingId } as Document });
-    await teams.updateOne({ _id: targetTeam._id }, { $addToSet: { memberIds: incomingId } });
+    const nextMembers = currMembers.filter((x) => x !== outgoingId);
+    if (!nextMembers.includes(incomingId)) nextMembers.push(incomingId);
+    await teams.updateOne({ _id: targetTeam._id }, { $set: { memberIds: nextMembers } });
     await syncRemovedMemberReg(outgoingId, targetTeam._id as ObjectId);
-    const incUpdate: Document = { $addToSet: { teamIds: targetTeam._id } };
-    if (!incomingReg.teamId) incUpdate.$set = { teamId: targetTeam._id };
-    await registrations.updateOne({ _id: incomingReg._id }, incUpdate);
+
+    const prevIncTeams: ObjectId[] = Array.isArray(incomingReg.teamIds) ? incomingReg.teamIds : [];
+    const nextIncTeams = prevIncTeams.some((x) => String(x) === String(targetTeam._id))
+      ? prevIncTeams
+      : [...prevIncTeams, targetTeam._id as ObjectId];
+    await registrations.updateOne(
+      { _id: incomingReg._id },
+      { $set: { teamIds: nextIncTeams, teamId: incomingReg.teamId || targetTeam._id } }
+    );
 
     const upcoming = await matches
       .find({
@@ -286,8 +307,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { _id: targetTeam._id },
       { $set: { status: "disbanded", disbandedAt: new Date(), disbandedBy: uid } }
     );
-    for (const memberUid of targetTeam.memberIds || []) {
-      await syncRemovedMemberReg(String(memberUid), targetTeam._id as ObjectId);
+    for (const memberUid of currMembers) {
+      await syncRemovedMemberReg(memberUid, targetTeam._id as ObjectId);
     }
     await writeAudit(String(t.guildId), uid, "team.delete", "Team", targetTeam._id, { name: targetTeam.name });
     return NextResponse.json({ ok: true });
