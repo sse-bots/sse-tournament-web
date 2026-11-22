@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCollections, toObjectId, serializeDoc, serializeDocs, writeAudit } from "@/lib/mongo";
 import { getSessionActor, canManageTournament, canReviewTournamentResult } from "@/lib/permissions";
+import { enqueueBotEvent } from "@/lib/bot-sync";
 import { SCORING_SYSTEMS, TEAM_POWER_RULES } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -223,6 +224,14 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     );
   }
 
+  const [relatedMatches, relatedTickets] = await Promise.all([
+    matches.find({ tournamentId: oid, channelId: { $exists: true, $ne: null } }).toArray(),
+    tickets.find({ tournamentId: oid, channelId: { $exists: true, $ne: null } }).toArray(),
+  ]);
+  const channelIds = [...relatedMatches, ...relatedTickets]
+    .map((doc) => (doc.channelId ? String(doc.channelId).trim() : ""))
+    .filter(Boolean);
+
   await Promise.all([
     registrations.deleteMany({ tournamentId: oid }),
     teams.deleteMany({ tournamentId: oid }),
@@ -232,8 +241,23 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     tournaments.deleteOne({ _id: oid }),
   ]);
 
+  if (channelIds.length > 0) {
+    await enqueueBotEvent({
+      guildId: String(t.guildId),
+      type: "match.cleanup_channels",
+      actorId: actor!.discordId,
+      tournamentId: oid,
+      payload: {
+        channelIds,
+        deleteChannels: false,
+        reason: `Tournament "${t.name}" deleted on Web Arena; channel archived.`,
+      },
+    });
+  }
+
   await writeAudit(String(t.guildId), actor!.discordId, "tournament.delete", "Tournament", oid, {
     name: t.name,
+    archivedChannels: channelIds.length,
   });
   return NextResponse.json({ ok: true });
 }
