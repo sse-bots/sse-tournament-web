@@ -83,7 +83,11 @@ function TournamentDetailContent() {
   }, [loadAll]);
 
   if (loading) {
-    return <div className="mx-auto max-w-7xl px-4 py-16 text-center text-sm text-[var(--arena-muted)]">Loading tournament arena...</div>;
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-16 text-center text-sm text-[var(--arena-muted)]">
+        Loading tournament arena...
+      </div>
+    );
   }
 
   if (error || !tournament) {
@@ -99,7 +103,13 @@ function TournamentDetailContent() {
     registrations.filter((r) => r.status === "registered" && r.squadPowerStatus === "pending").length +
     matches.filter((m) => m.status === "pending_review" || m.status === "disputed").length;
 
-  const tabs: Array<{ key: TabKey; label: string; icon: React.ElementType; badge?: number; hide?: boolean }> = [
+  const tabs: Array<{
+    key: TabKey;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    badge?: number;
+    hide?: boolean;
+  }> = [
     { key: "overview", label: "Overview", icon: Trophy },
     { key: "setup", label: "Setup & Publish", icon: Sliders, hide: !perms.canManage },
     { key: "register", label: "Registration", icon: UserPlus, badge: registrations.filter((r) => r.status === "registered").length },
@@ -111,7 +121,6 @@ function TournamentDetailContent() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 space-y-6">
-      {/* Header Banner */}
       <div className="arena-card overflow-hidden shadow-arena">
         <div className="bg-gradient-to-r from-amber-500/15 via-[var(--arena-surface)] to-cyan-500/10 p-6">
           <Link href="/" className="inline-flex items-center gap-1.5 text-xs font-bold text-[var(--arena-muted)] hover:text-amber-500 mb-3">
@@ -151,7 +160,6 @@ function TournamentDetailContent() {
           </div>
         </div>
 
-        {/* Navigation Tabs */}
         <div className="flex overflow-x-auto border-t border-[var(--arena-border)] bg-[var(--arena-elevated)]/50 px-3">
           {tabs.filter((t) => !t.hide).map((item) => {
             const Icon = item.icon;
@@ -180,11 +188,9 @@ function TournamentDetailContent() {
         </div>
       </div>
 
-      {/* Tab Content */}
       {tab === "overview" && (
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2 space-y-6">
-            {/* Rules & Policy */}
             <div className="arena-card p-5 space-y-4">
               <h3 className="font-display-caps text-base font-bold">Format & Rules Summary</h3>
               <div className="grid gap-3 sm:grid-cols-2 text-sm">
@@ -222,7 +228,6 @@ function TournamentDetailContent() {
               </div>
             </div>
 
-            {/* Brackets Overview */}
             {tournament.bracketsEnabled && (
               <div className="arena-card p-5 space-y-3">
                 <h3 className="font-display-caps text-base font-bold">Squad-Power Brackets</h3>
@@ -240,7 +245,6 @@ function TournamentDetailContent() {
             )}
           </div>
 
-          {/* Right Sidebar: Prizes & Bot Sync Info */}
           <div className="space-y-6">
             <div className="arena-card p-5 space-y-3">
               <h3 className="font-display-caps text-base font-bold text-amber-500">Championship Prizes</h3>
