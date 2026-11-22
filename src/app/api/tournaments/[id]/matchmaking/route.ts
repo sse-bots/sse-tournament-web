@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCollections, toObjectId, writeAudit } from "@/lib/mongo";
 import { getSessionActor, canManageTournament } from "@/lib/permissions";
+import { enqueueBotEvent } from "@/lib/bot-sync";
 import { buildEligibleEntrants, createMatchRecord, EntrantSeed } from "@/lib/tournament-engine";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +30,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         { status: 409 }
       );
     }
+    const channelIds = existing
+      .map((m) => (m.channelId ? String(m.channelId).trim() : ""))
+      .filter(Boolean);
+
     await matches.deleteMany({ tournamentId: oid });
     await seriesRecords.deleteMany({ tournamentId: oid });
     await tournaments.updateOne(
@@ -38,6 +43,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         $unset: { bracketChampions: "", finalStandings: "", finalStandingsFrozenAt: "" },
       }
     );
+
+    if (channelIds.length > 0) {
+      await enqueueBotEvent({
+        guildId: String(t.guildId),
+        type: "match.cleanup_channels",
+        actorId: actor!.discordId,
+        tournamentId: oid,
+        payload: {
+          channelIds,
+          deleteChannels: true,
+          reason: `Regenerating tournament ${oid.toHexString()} matches from Web Arena`,
+        },
+      });
+    }
+
     await writeAudit(String(t.guildId), actor!.discordId, "matchmaking.regenerate", "Tournament", oid, {
       deletedMatches: existing.length,
     });
@@ -234,6 +254,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     await writeAudit(String(t.guildId), actor!.discordId, "matchmaking.generate", "Tournament", oid, {
       matches: made,
       format: t.format,
+    });
+    await enqueueBotEvent({
+      guildId: String(t.guildId),
+      type: "match.sync_channels",
+      actorId: actor!.discordId,
+      tournamentId: oid,
     });
     return NextResponse.json({ ok: true, created: made });
   }
