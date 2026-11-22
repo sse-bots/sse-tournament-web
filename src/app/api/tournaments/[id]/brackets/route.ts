@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ObjectId, Document, UpdateFilter } from "mongodb";
+import { ObjectId, Document } from "mongodb";
 import { getCollections, toObjectId, serializeDoc, writeAudit } from "@/lib/mongo";
 import { getSessionActor, canManageTournament } from "@/lib/permissions";
 import { bracketRangesOverlap } from "@/lib/tournament-engine";
@@ -20,7 +20,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!check.allowed) return NextResponse.json({ error: check.reason }, { status: 403 });
 
   if (t.settingsLocked || !["draft", "registration"].includes(String(t.status))) {
-    return NextResponse.json({ error: "Brackets are locked after registration closes or tournament starts." }, { status: 409 });
+    return NextResponse.json(
+      { error: "Brackets are locked after registration closes or tournament starts." },
+      { status: 409 }
+    );
   }
   if (!t.bracketsEnabled) {
     return NextResponse.json({ error: "Enable brackets on this tournament first." }, { status: 400 });
@@ -36,7 +39,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const allowOverlap = Boolean(body.allowOverlap);
 
   if (!name) return NextResponse.json({ error: "Bracket name is required." }, { status: 400 });
-  if (Number.isNaN(minPower) || minPower < 0) return NextResponse.json({ error: "minPower must be >= 0." }, { status: 400 });
+  if (Number.isNaN(minPower) || minPower < 0) {
+    return NextResponse.json({ error: "minPower must be >= 0." }, { status: 400 });
+  }
   if (maxPower !== null && (Number.isNaN(maxPower) || maxPower < minPower)) {
     return NextResponse.json({ error: "maxPower must be >= minPower." }, { status: 400 });
   }
@@ -63,7 +68,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     placementRules: "standard",
     displayOrder: existing.length + 1,
   };
-  await tournaments.updateOne({ _id: oid }, { $push: { brackets: bracket } } as UpdateFilter<Document>);
+
+  await tournaments.updateOne(
+    { _id: oid },
+    { $set: { brackets: [...existing, bracket], updatedAt: new Date() } }
+  );
   await writeAudit(String(t.guildId), actor!.discordId, "bracket.add", "Tournament", oid, {
     bracket: name,
     min: minPower,
@@ -185,9 +194,12 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     return NextResponse.json({ error: "Brackets are locked after start." }, { status: 409 });
   }
 
+  const existing: Document[] = Array.isArray(t.brackets) ? t.brackets : [];
+  const remaining = existing.filter((b) => String(b._id) !== bracketId.toHexString());
+
   await tournaments.updateOne(
     { _id: oid },
-    { $pull: { brackets: { _id: bracketId } } } as UpdateFilter<Document>
+    { $set: { brackets: remaining, updatedAt: new Date() } }
   );
   await writeAudit(String(t.guildId), actor!.discordId, "bracket.delete", "Tournament", oid, {
     bracketId: bracketId.toHexString(),
