@@ -5,6 +5,21 @@ import { rankRegistrationRows, teamRecordStats, teamVerifiedPower } from "@/lib/
 
 export const dynamic = "force-dynamic";
 
+interface RankedTeamRow {
+  _id: string;
+  name: string;
+  logoUrl: string | null;
+  captainId: string;
+  memberCount: number;
+  bracketId: string | null;
+  power: number;
+  wins: number;
+  losses: number;
+  points: number;
+  played: number;
+  pct: number;
+}
+
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const oid = toObjectId(id);
@@ -20,7 +35,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
   if (format === "csv") {
     const bracketMap = new Map<string, string>(
-      (t.brackets || []).map((b: Document) => [String(b._id), String(b.name)])
+      (Array.isArray(t.brackets) ? t.brackets : []).map((b: Document) => [String(b._id), String(b.name)])
     );
     const lines: string[] = [
       "record_type,id_or_user,in_game_or_match,status,bracket,verified_power_or_map,wins_or_round,losses_or_winner,points_or_proof,extra",
@@ -79,21 +94,21 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const regDocs = await registrations.find(q).toArray();
   const rankedIndividuals = await rankRegistrationRows(t, regDocs);
 
-  let rankedTeams: Array<Record<string, unknown>> = [];
+  let rankedTeams: RankedTeamRow[] = [];
   if (t.mode === "team") {
     const tq: Record<string, unknown> = { tournamentId: oid, status: "active" };
     if (bracketOid) tq.bracketId = bracketOid;
     const teamDocs = await teams.find(tq).toArray();
-    const list = [];
+    const list: RankedTeamRow[] = [];
     for (const tm of teamDocs) {
       const stats = await teamRecordStats(t, tm, bracketOid);
       const power = await teamVerifiedPower(t, tm);
       list.push({
         _id: (tm._id as ObjectId).toHexString(),
-        name: tm.name,
-        logoUrl: tm.logoUrl || null,
-        captainId: tm.captainId,
-        memberCount: (tm.memberIds || []).length,
+        name: String(tm.name || ""),
+        logoUrl: tm.logoUrl ? String(tm.logoUrl) : null,
+        captainId: String(tm.captainId || ""),
+        memberCount: Array.isArray(tm.memberIds) ? tm.memberIds.length : 0,
         bracketId: tm.bracketId ? String(tm.bracketId) : null,
         power,
         ...stats,
@@ -104,8 +119,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       if (t.scoring === "points") return b.points - a.points || b.wins - a.wins;
       if (t.scoring === "win_percentage") return b.pct - a.pct || b.wins - a.wins || b.points - a.points;
       if (t.scoring === "combined") {
-        const sa = a.wins * Number(t.winWeight ?? 3) + a.power * Number(t.powerWeight ?? 0) + a.points * Number(t.pointsWeight ?? 1);
-        const sb = b.wins * Number(t.winWeight ?? 3) + b.power * Number(t.powerWeight ?? 0) + b.points * Number(t.pointsWeight ?? 1);
+        const sa =
+          a.wins * Number(t.winWeight ?? 3) +
+          a.power * Number(t.powerWeight ?? 0) +
+          a.points * Number(t.pointsWeight ?? 1);
+        const sb =
+          b.wins * Number(t.winWeight ?? 3) +
+          b.power * Number(t.powerWeight ?? 0) +
+          b.points * Number(t.pointsWeight ?? 1);
         return sb - sa;
       }
       return b.wins - a.wins || b.points - a.points;
