@@ -18,6 +18,8 @@ import {
 } from "lucide-react";
 import { TournamentDTO, RegistrationDTO, TeamDTO, MatchDTO } from "@/lib/types";
 import { TournamentStatusBadge, FormatBadge } from "@/components/ui/badges";
+import { AuthGuard } from "@/components/auth-guard";
+import { BotSyncBar } from "@/components/bot-sync-bar";
 import { SetupPublishPanel } from "@/components/tournament/setup-publish-panel";
 import { RegistrationPanel } from "@/components/tournament/registration-panel";
 import { TeamsPanel } from "@/components/tournament/teams-panel";
@@ -94,7 +96,7 @@ function TournamentDetailContent() {
     return (
       <div className="mx-auto max-w-xl px-4 py-16 text-center space-y-3">
         <div className="text-red-500 font-bold">{error || "Tournament not found."}</div>
-        <Link href="/" className="arena-btn-secondary">Back to Arena</Link>
+        <Link href="/dashboard" className="arena-btn-secondary">Back to Dashboard</Link>
       </div>
     );
   }
@@ -120,11 +122,14 @@ function TournamentDetailContent() {
   ];
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 space-y-6">
+    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 space-y-5">
       <div className="arena-card overflow-hidden shadow-arena">
-        <div className="bg-gradient-to-r from-amber-500/15 via-[var(--arena-surface)] to-cyan-500/10 p-6">
-          <Link href="/" className="inline-flex items-center gap-1.5 text-xs font-bold text-[var(--arena-muted)] hover:text-amber-500 mb-3">
-            <ArrowLeft className="h-3.5 w-3.5" /> Back to Arena
+        <div className="bg-gradient-to-r from-amber-500/15 via-[var(--arena-surface)] to-cyan-500/10 p-5 sm:p-6">
+          <Link
+            href={`/dashboard/${tournament.guildId}`}
+            className="inline-flex items-center gap-1.5 text-xs font-bold text-[var(--arena-muted)] hover:text-amber-500 mb-3"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" /> Back to Server Arena
           </Link>
 
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -140,19 +145,19 @@ function TournamentDetailContent() {
                 </span>
               </div>
               <h1 className="font-display-caps text-2xl sm:text-4xl font-extrabold">{tournament.name}</h1>
-              <p className="text-sm text-[var(--arena-muted)] max-w-3xl">
+              <p className="text-xs sm:text-sm text-[var(--arena-muted)] max-w-3xl">
                 {tournament.description || "Official SSE competitive tournament."}
               </p>
             </div>
 
             <div className="flex flex-wrap gap-2 shrink-0">
               {tournament.status === "registration" && (
-                <button type="button" onClick={() => setTab("register")} className="arena-btn-primary shadow-glowGold">
+                <button type="button" onClick={() => setTab("register")} className="arena-btn-primary shadow-glowGold w-full sm:w-auto">
                   <UserPlus className="h-4 w-4" /> Register Now
                 </button>
               )}
               {tournament.status === "draft" && perms.canManage && (
-                <button type="button" onClick={() => setTab("setup")} className="arena-btn-primary shadow-glowGold">
+                <button type="button" onClick={() => setTab("setup")} className="arena-btn-primary shadow-glowGold w-full sm:w-auto">
                   <Sliders className="h-4 w-4" /> Finish Draft & Publish
                 </button>
               )}
@@ -169,7 +174,7 @@ function TournamentDetailContent() {
                 key={item.key}
                 type="button"
                 onClick={() => setTab(item.key)}
-                className={`flex items-center gap-2 whitespace-nowrap border-b-2 px-4 py-3 text-xs font-bold uppercase tracking-wider transition-colors ${
+                className={`flex items-center gap-2 whitespace-nowrap border-b-2 px-3.5 sm:px-4 py-3 text-xs font-bold uppercase tracking-wider transition-colors ${
                   active
                     ? "border-amber-500 text-amber-500"
                     : "border-transparent text-[var(--arena-muted)] hover:text-[var(--arena-text)]"
@@ -188,6 +193,13 @@ function TournamentDetailContent() {
         </div>
       </div>
 
+      {/* Live Discord Bot Sync Status Bar */}
+      <BotSyncBar
+        tournamentId={tournament._id}
+        guildId={tournament.guildId}
+        canManage={perms.canManage}
+      />
+
       {tab === "overview" && (
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2 space-y-6">
@@ -204,8 +216,8 @@ function TournamentDetailContent() {
                 <div className="rounded-lg bg-[var(--arena-elevated)] p-3">
                   <div className="text-[11px] font-bold uppercase text-[var(--arena-muted)]">Schedule & Deadlines</div>
                   <div className="font-semibold mt-1 flex items-center gap-1.5">
-                    <Calendar className="h-4 w-4 text-cyan-500" />
-                    {tournament.schedule?.matchDeadlineHours || 48}h reporting deadline •{" "}
+                    <Calendar className="h-4 w-4 text-cyan-500 shrink-0" />
+                    {tournament.schedule?.matchDeadlineHours || 48}h deadline •{" "}
                     {tournament.schedule?.matchDurationMinutes || 60}m slots
                   </div>
                 </div>
@@ -266,7 +278,7 @@ function TournamentDetailContent() {
 
             <div className="arena-card p-5 space-y-2 text-xs text-[var(--arena-muted)]">
               <div className="font-display-caps text-sm font-bold text-[var(--arena-text)]">Discord Sync Details</div>
-              <div className="font-mono">Tournament ID: {tournament._id}</div>
+              <div className="font-mono break-all">Tournament ID: {tournament._id}</div>
               <div className="font-mono">Guild ID: {tournament.guildId}</div>
               <div className="font-mono">Owner ID: {tournament.ownerId}</div>
             </div>
@@ -286,8 +298,10 @@ function TournamentDetailContent() {
 
 export default function TournamentDetailPage() {
   return (
-    <Suspense fallback={<div className="py-16 text-center text-sm text-[var(--arena-muted)]">Loading tournament...</div>}>
-      <TournamentDetailContent />
-    </Suspense>
+    <AuthGuard>
+      <Suspense fallback={<div className="py-16 text-center text-sm text-[var(--arena-muted)]">Loading tournament...</div>}>
+        <TournamentDetailContent />
+      </Suspense>
+    </AuthGuard>
   );
 }
