@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCollections, toObjectId, serializeDoc, writeAudit } from "@/lib/mongo";
 import { getSessionActor, canManageTournament, canReviewTournamentResult } from "@/lib/permissions";
+import { enqueueBotEvent } from "@/lib/bot-sync";
 import {
   applyResultScore,
   reverseSingleMatchScore,
@@ -37,29 +38,59 @@ export async function POST(
   const isParticipant = participantIds.includes(actor.discordId);
 
   if (action === "submit") {
-    if (!isParticipant) return NextResponse.json({ error: "Only assigned match participants can submit results." }, { status: 403 });
-    if (["paused", "completed", "cancelled", "archived"].includes(String(t.status))) {
-      return NextResponse.json({ error: "Tournament is paused or closed; submissions are disabled." }, { status: 409 });
+    if (!isParticipant) {
+      return NextResponse.json(
+        { error: "Only assigned match participants can submit results." },
+        { status: 403 }
+      );
     }
-    if (!["scheduled", "ready", "rejected", "disputed", "in_progress", "pending_proof"].includes(String(m.status))) {
-      return NextResponse.json({ error: `Cannot submit result while match status is ${m.status}.` }, { status: 409 });
+    if (["paused", "completed", "cancelled", "archived"].includes(String(t.status))) {
+      return NextResponse.json(
+        { error: "Tournament is paused or closed; submissions are disabled." },
+        { status: 409 }
+      );
+    }
+    if (
+      !["scheduled", "ready", "rejected", "disputed", "in_progress", "pending_proof"].includes(
+        String(m.status)
+      )
+    ) {
+      return NextResponse.json(
+        { error: `Cannot submit result while match status is ${m.status}.` },
+        { status: 409 }
+      );
     }
     const winnerSide = String(body.winnerSide || "") as "A" | "B" | "DRAW";
-    if (!["A", "B", "DRAW"].includes(winnerSide)) return NextResponse.json({ error: "Choose Side A, Side B, or Draw." }, { status: 400 });
+    if (!["A", "B", "DRAW"].includes(winnerSide)) {
+      return NextResponse.json({ error: "Choose Side A, Side B, or Draw." }, { status: 400 });
+    }
     if (winnerSide === "DRAW") {
-      if (t.format === "series" || ["single_elimination", "double_elimination", "swiss"].includes(String(t.format))) {
-        return NextResponse.json({ error: `Draws are not allowed in ${t.format} tournaments.` }, { status: 400 });
+      if (
+        t.format === "series" ||
+        ["single_elimination", "double_elimination", "swiss"].includes(String(t.format))
+      ) {
+        return NextResponse.json(
+          { error: `Draws are not allowed in ${t.format} tournaments.` },
+          { status: 400 }
+        );
       }
-      if (!t.resultPolicy?.allowDraws) return NextResponse.json({ error: "Draws are disabled for this tournament." }, { status: 400 });
+      if (!t.resultPolicy?.allowDraws) {
+        return NextResponse.json({ error: "Draws are disabled for this tournament." }, { status: 400 });
+      }
     }
 
     const proofUrl = String(body.proofUrl || "").trim();
     if ((t.resultPolicy?.proofRequired ?? true) && !proofUrl) {
-      return NextResponse.json({ error: "Screenshot proof is required by tournament policy." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Screenshot proof is required by tournament policy." },
+        { status: 400 }
+      );
     }
 
-    const winnerIds = winnerSide === "A" ? m.sideAUserIds || [] : winnerSide === "B" ? m.sideBUserIds || [] : [];
-    const winnerTeam = winnerSide === "A" ? m.sideATeamId : winnerSide === "B" ? m.sideBTeamId : null;
+    const winnerIds =
+      winnerSide === "A" ? m.sideAUserIds || [] : winnerSide === "B" ? m.sideBUserIds || [] : [];
+    const winnerTeam =
+      winnerSide === "A" ? m.sideATeamId : winnerSide === "B" ? m.sideBTeamId : null;
     const nextStatus = (t.resultPolicy?.approvalRequired ?? true) ? "pending_review" : "approved";
 
     const changes: Record<string, unknown> = {
@@ -90,47 +121,119 @@ export async function POST(
       status: nextStatus,
       proof: proofUrl.slice(0, 120),
     });
+
+    await enqueueBotEvent({
+      guildId: String(t.guildId),
+      type: "match.result_submitted",
+      actorId: actor.discordId,
+      tournamentId: tid,
+      matchId: mid,
+      payload: {
+        winnerSide,
+        status: nextStatus,
+        proofUrl: proofUrl.startsWith("http") ? proofUrl : null,
+      },
+    });
+
+    if (nextStatus === "approved") {
+      await enqueueBotEvent({
+        guildId: String(t.guildId),
+        type: "match.sync_channels",
+        actorId: actor.discordId,
+        tournamentId: tid,
+      });
+    }
+
     return NextResponse.json({ ok: true, match: serializeDoc(await matches.findOne({ _id: mid })) });
   }
 
   if (action === "appeal") {
-    if (!isParticipant) return NextResponse.json({ error: "Only match participants can appeal." }, { status: 403 });
+    if (!isParticipant) {
+      return NextResponse.json({ error: "Only match participants can appeal." }, { status: 403 });
+    }
     if (!["approved", "rejected", "disputed"].includes(String(m.status))) {
-      return NextResponse.json({ error: "Only approved or rejected matches can be appealed." }, { status: 409 });
+      return NextResponse.json(
+        { error: "Only approved or rejected matches can be appealed." },
+        { status: 409 }
+      );
     }
     if (["completed", "cancelled", "archived"].includes(String(t.status))) {
-      return NextResponse.json({ error: "Closed tournaments require an administrator override." }, { status: 409 });
+      return NextResponse.json(
+        { error: "Closed tournaments require an administrator override." },
+        { status: 409 }
+      );
     }
     if (!note) return NextResponse.json({ error: "Provide an appeal reason." }, { status: 400 });
     if (m.status === "approved") {
-      if (m.seriesId) return NextResponse.json({ error: "Series results must be escalated to head managers." }, { status: 409 });
+      if (m.seriesId) {
+        return NextResponse.json(
+          { error: "Series results must be escalated to head managers." },
+          { status: 409 }
+        );
+      }
       await reverseSingleMatchScore(t, m);
     }
     await matches.updateOne(
       { _id: mid },
-      { $set: { status: "disputed", appealBy: actor.discordId, appealAt: now, appealReason: note, appealScoreReversed: m.status === "approved" } }
+      {
+        $set: {
+          status: "disputed",
+          appealBy: actor.discordId,
+          appealAt: now,
+          appealReason: note,
+          appealScoreReversed: m.status === "approved",
+        },
+      }
     );
-    await writeAudit(String(t.guildId), actor.discordId, "match.appeal", "Match", mid, { reason: note });
+    await writeAudit(String(t.guildId), actor.discordId, "match.appeal", "Match", mid, {
+      reason: note,
+    });
+    await enqueueBotEvent({
+      guildId: String(t.guildId),
+      type: "match.result_reviewed",
+      actorId: actor.discordId,
+      tournamentId: tid,
+      matchId: mid,
+      payload: { action: "appeal", note },
+    });
     return NextResponse.json({ ok: true, match: serializeDoc(await matches.findOne({ _id: mid })) });
   }
 
   if (["approve", "reject", "dispute", "request_proof", "resolve_dispute"].includes(action)) {
     const rev = await canReviewTournamentResult(actor, t);
     if (!rev.allowed || isParticipant) {
-      return NextResponse.json({ error: "A non-participating manager or result reviewer is required." }, { status: 403 });
+      return NextResponse.json(
+        { error: "A non-participating manager or result reviewer is required." },
+        { status: 403 }
+      );
     }
     if (["paused", "completed", "cancelled", "archived"].includes(String(t.status))) {
-      return NextResponse.json({ error: "Tournament is paused or closed; result review is disabled." }, { status: 409 });
+      return NextResponse.json(
+        { error: "Tournament is paused or closed; result review is disabled." },
+        { status: 409 }
+      );
     }
 
     if (action === "resolve_dispute") {
-      if (m.status !== "disputed") return NextResponse.json({ error: "Match is not disputed." }, { status: 409 });
-      if (!note) return NextResponse.json({ error: "Resolution reason is required." }, { status: 400 });
+      if (m.status !== "disputed") {
+        return NextResponse.json({ error: "Match is not disputed." }, { status: 409 });
+      }
+      if (!note) {
+        return NextResponse.json({ error: "Resolution reason is required." }, { status: 400 });
+      }
       const decision = String(body.decision || "");
       if (decision === "reject") {
         await matches.updateOne(
           { _id: mid },
-          { $set: { status: "rejected", reviewedBy: actor.discordId, reviewedAt: now, reviewNote: note, disputeResolvedAt: now } }
+          {
+            $set: {
+              status: "rejected",
+              reviewedBy: actor.discordId,
+              reviewedAt: now,
+              reviewNote: note,
+              disputeResolvedAt: now,
+            },
+          }
         );
       } else if (decision === "A" || decision === "B") {
         const wIds = decision === "A" ? m.sideAUserIds || [] : m.sideBUserIds || [];
@@ -153,7 +256,26 @@ export async function POST(
       } else {
         return NextResponse.json({ error: "Decision must be A, B, or reject." }, { status: 400 });
       }
-      await writeAudit(String(t.guildId), actor.discordId, "match.resolve_dispute", "Match", mid, { decision, reason: note });
+      await writeAudit(String(t.guildId), actor.discordId, "match.resolve_dispute", "Match", mid, {
+        decision,
+        reason: note,
+      });
+      await enqueueBotEvent({
+        guildId: String(t.guildId),
+        type: "match.result_reviewed",
+        actorId: actor.discordId,
+        tournamentId: tid,
+        matchId: mid,
+        payload: { action: "resolve_dispute", decision, note },
+      });
+      if (decision === "A" || decision === "B") {
+        await enqueueBotEvent({
+          guildId: String(t.guildId),
+          type: "match.sync_channels",
+          actorId: actor.discordId,
+          tournamentId: tid,
+        });
+      }
       return NextResponse.json({ ok: true, match: serializeDoc(await matches.findOne({ _id: mid })) });
     }
 
@@ -162,12 +284,32 @@ export async function POST(
     }
 
     if (action === "request_proof") {
-      if (!note) return NextResponse.json({ error: "Explain why new proof is needed." }, { status: 400 });
+      if (!note) {
+        return NextResponse.json({ error: "Explain why new proof is needed." }, { status: 400 });
+      }
       await matches.updateOne(
         { _id: mid },
-        { $set: { status: "rejected", reviewedBy: actor.discordId, reviewedAt: now, reviewNote: note, proofRequested: true } }
+        {
+          $set: {
+            status: "rejected",
+            reviewedBy: actor.discordId,
+            reviewedAt: now,
+            reviewNote: note,
+            proofRequested: true,
+          },
+        }
       );
-      await writeAudit(String(t.guildId), actor.discordId, "match.request_proof", "Match", mid, { reason: note });
+      await writeAudit(String(t.guildId), actor.discordId, "match.request_proof", "Match", mid, {
+        reason: note,
+      });
+      await enqueueBotEvent({
+        guildId: String(t.guildId),
+        type: "match.result_reviewed",
+        actorId: actor.discordId,
+        tournamentId: tid,
+        matchId: mid,
+        payload: { action: "request_proof", note },
+      });
       return NextResponse.json({ ok: true, match: serializeDoc(await matches.findOne({ _id: mid })) });
     }
 
@@ -194,6 +336,22 @@ export async function POST(
       }
     }
     await writeAudit(String(t.guildId), actor.discordId, `match.${action}`, "Match", mid, { note });
+    await enqueueBotEvent({
+      guildId: String(t.guildId),
+      type: "match.result_reviewed",
+      actorId: actor.discordId,
+      tournamentId: tid,
+      matchId: mid,
+      payload: { action, note },
+    });
+    if (action === "approve") {
+      await enqueueBotEvent({
+        guildId: String(t.guildId),
+        type: "match.sync_channels",
+        actorId: actor.discordId,
+        tournamentId: tid,
+      });
+    }
     return NextResponse.json({ ok: true, match: serializeDoc(await matches.findOne({ _id: mid })) });
   }
 
@@ -207,7 +365,9 @@ export async function POST(
         return NextResponse.json({ error: "Match is already finalized." }, { status: 409 });
       }
       const winnerSide = String(body.winnerSide || "") as "A" | "B";
-      if (winnerSide !== "A" && winnerSide !== "B") return NextResponse.json({ error: "Choose winnerSide A or B." }, { status: 400 });
+      if (winnerSide !== "A" && winnerSide !== "B") {
+        return NextResponse.json({ error: "Choose winnerSide A or B." }, { status: 400 });
+      }
       const wIds = winnerSide === "A" ? m.sideAUserIds || [] : m.sideBUserIds || [];
       const changes = {
         status: "forfeited",
@@ -223,17 +383,47 @@ export async function POST(
       await applyResultScore(t, updatedM, winnerSide);
       await advanceSeriesIfNeeded(t, updatedM);
       await advanceTournamentIfReady(t, Number(m.roundNumber || 1));
-      await writeAudit(String(t.guildId), actor.discordId, "match.forfeit", "Match", mid, { winnerSide, reason: note });
+      await writeAudit(String(t.guildId), actor.discordId, "match.forfeit", "Match", mid, {
+        winnerSide,
+        reason: note,
+      });
+      await enqueueBotEvent({
+        guildId: String(t.guildId),
+        type: "match.result_reviewed",
+        actorId: actor.discordId,
+        tournamentId: tid,
+        matchId: mid,
+        payload: { action: "forfeit", winnerSide, note },
+      });
+      await enqueueBotEvent({
+        guildId: String(t.guildId),
+        type: "match.sync_channels",
+        actorId: actor.discordId,
+        tournamentId: tid,
+      });
       return NextResponse.json({ ok: true, match: serializeDoc(await matches.findOne({ _id: mid })) });
     }
 
     if (action === "cancel") {
-      if (m.status === "approved") return NextResponse.json({ error: "Approved match cannot be cancelled; use admin override." }, { status: 409 });
+      if (m.status === "approved") {
+        return NextResponse.json(
+          { error: "Approved match cannot be cancelled; use admin override." },
+          { status: 409 }
+        );
+      }
       await matches.updateOne(
         { _id: mid },
         { $set: { status: "cancelled", cancelledAt: now, cancelledBy: actor.discordId, cancelReason: note } }
       );
       await writeAudit(String(t.guildId), actor.discordId, "match.cancel", "Match", mid, { reason: note });
+      await enqueueBotEvent({
+        guildId: String(t.guildId),
+        type: "match.result_reviewed",
+        actorId: actor.discordId,
+        tournamentId: tid,
+        matchId: mid,
+        payload: { action: "cancel", note },
+      });
       return NextResponse.json({ ok: true, match: serializeDoc(await matches.findOne({ _id: mid })) });
     }
 
@@ -242,10 +432,18 @@ export async function POST(
         return NextResponse.json({ error: "Cannot reopen match from current status." }, { status: 409 });
       }
       if (m.status === "approved" && !actor.isBotAdmin) {
-        return NextResponse.json({ error: "Only a Bot Administrator can reopen an approved result." }, { status: 403 });
+        return NextResponse.json(
+          { error: "Only a Bot Administrator can reopen an approved result." },
+          { status: 403 }
+        );
       }
       if (m.status === "approved") {
-        if (m.seriesId) return NextResponse.json({ error: "Finalized series matches cannot be reopened independently." }, { status: 409 });
+        if (m.seriesId) {
+          return NextResponse.json(
+            { error: "Finalized series matches cannot be reopened independently." },
+            { status: 409 }
+          );
+        }
         await reverseSingleMatchScore(t, m);
       }
       await matches.updateOne(
@@ -265,16 +463,34 @@ export async function POST(
         }
       );
       await writeAudit(String(t.guildId), actor.discordId, "match.reopen", "Match", mid, { reason: note });
+      await enqueueBotEvent({
+        guildId: String(t.guildId),
+        type: "match.result_reviewed",
+        actorId: actor.discordId,
+        tournamentId: tid,
+        matchId: mid,
+        payload: { action: "reopen", note },
+      });
       return NextResponse.json({ ok: true, match: serializeDoc(await matches.findOne({ _id: mid })) });
     }
   }
 
   if (action === "override") {
-    if (!actor.isBotAdmin) return NextResponse.json({ error: "Bot Administrator permission required for result override." }, { status: 403 });
-    if (m.seriesId) return NextResponse.json({ error: "Override is disabled for series matches." }, { status: 409 });
+    if (!actor.isBotAdmin) {
+      return NextResponse.json(
+        { error: "Bot Administrator permission required for result override." },
+        { status: 403 }
+      );
+    }
+    if (m.seriesId) {
+      return NextResponse.json({ error: "Override is disabled for series matches." }, { status: 409 });
+    }
     const winnerSide = String(body.winnerSide || "") as "A" | "B";
     if ((winnerSide !== "A" && winnerSide !== "B") || !note) {
-      return NextResponse.json({ error: "winnerSide (A/B) and mandatory reason required." }, { status: 400 });
+      return NextResponse.json(
+        { error: "winnerSide (A/B) and mandatory reason required." },
+        { status: 400 }
+      );
     }
     if (m.status === "approved" || m.status === "forfeited") {
       await reverseSingleMatchScore(t, m);
@@ -297,6 +513,14 @@ export async function POST(
       from: m.reportedWinnerSide,
       to: winnerSide,
       reason: note,
+    });
+    await enqueueBotEvent({
+      guildId: String(t.guildId),
+      type: "match.result_reviewed",
+      actorId: actor.discordId,
+      tournamentId: tid,
+      matchId: mid,
+      payload: { action: "override", winnerSide, note },
     });
     return NextResponse.json({ ok: true, match: serializeDoc(await matches.findOne({ _id: mid })) });
   }
