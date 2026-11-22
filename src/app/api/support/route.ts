@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCollections, toObjectId, serializeDocs, serializeDoc, writeAudit } from "@/lib/mongo";
 import { getSessionActor } from "@/lib/permissions";
+import { enqueueBotEvent } from "@/lib/bot-sync";
 import { TICKET_CATEGORIES } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
+  const actor = await getSessionActor();
+  if (!actor) return NextResponse.json({ error: "Sign in with SSE Nexus required." }, { status: 401 });
+
   const { tickets } = await getCollections();
   const guildId = req.nextUrl.searchParams.get("guildId");
   const status = req.nextUrl.searchParams.get("status");
@@ -19,6 +23,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const actor = await getSessionActor();
   if (!actor) return NextResponse.json({ error: "Sign in with SSE Nexus required." }, { status: 401 });
+
   const body = await req.json();
   const category = String(body.category || "general");
   const description = String(body.description || "").trim();
@@ -44,6 +49,17 @@ export async function POST(req: NextRequest) {
     createdAt: new Date(),
   };
   const res = await tickets.insertOne(doc);
-  await writeAudit(guildId, actor.discordId, "support.create", "Ticket", res.insertedId, { category });
+  await writeAudit(guildId, actor.discordId, "support.create", "Ticket", res.insertedId, {
+    category,
+  });
+
+  await enqueueBotEvent({
+    guildId,
+    type: "support.ticket_created",
+    actorId: actor.discordId,
+    tournamentId,
+    ticketId: res.insertedId,
+  });
+
   return NextResponse.json({ ticket: serializeDoc({ ...doc, _id: res.insertedId }) }, { status: 201 });
 }
