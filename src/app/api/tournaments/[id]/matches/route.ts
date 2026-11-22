@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getCollections, toObjectId, serializeDoc, serializeDocs, writeAudit } from "@/lib/mongo";
 import { getSessionActor, canManageTournament } from "@/lib/permissions";
+import { enqueueBotEvent } from "@/lib/bot-sync";
 import { createMatchRecord, teamVerifiedPower, EntrantSeed } from "@/lib/tournament-engine";
 
 export const dynamic = "force-dynamic";
@@ -39,7 +40,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!check.allowed) return NextResponse.json({ error: check.reason }, { status: 403 });
 
   if (!["registration_closed", "matchmaking", "in_progress"].includes(String(t.status))) {
-    return NextResponse.json({ error: "Close registration before creating manual matches." }, { status: 409 });
+    return NextResponse.json(
+      { error: "Close registration before creating manual matches." },
+      { status: 409 }
+    );
   }
 
   const body = await req.json();
@@ -58,7 +62,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const byId = toObjectId(raw);
       const tm = byId
         ? await teams.findOne({ _id: byId, tournamentId: tournamentOid, status: "active" })
-        : await teams.findOne({ tournamentId: tournamentOid, nameLower: raw.toLowerCase(), status: "active" });
+        : await teams.findOne({
+            tournamentId: tournamentOid,
+            nameLower: raw.toLowerCase(),
+            status: "active",
+          });
       if (!tm) throw new Error(`Active team "${raw}" not found.`);
       return {
         ids: (Array.isArray(tm.memberIds) ? tm.memberIds : []).map((x: unknown) => String(x)),
@@ -73,7 +81,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .filter(Boolean);
     if (!ids.length) throw new Error("Enter registered Discord User ID(s).");
     for (const uid of ids) {
-      const r = await registrations.findOne({ tournamentId: tournamentOid, userId: uid, status: "registered" });
+      const r = await registrations.findOne({
+        tournamentId: tournamentOid,
+        userId: uid,
+        status: "registered",
+      });
       if (!r) throw new Error(`Player ${uid} is not registered.`);
     }
     return { ids, teamId: null, power: 0, bracketId };
@@ -89,10 +101,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   if (a.ids.some((u: string) => b.ids.includes(u))) {
-    return NextResponse.json({ error: "A player cannot be assigned to both sides." }, { status: 400 });
+    return NextResponse.json(
+      { error: "A player cannot be assigned to both sides." },
+      { status: 400 }
+    );
   }
 
-  const last = await matches.find({ tournamentId: tournamentOid }).sort({ matchNumber: -1 }).limit(1).toArray();
+  const last = await matches
+    .find({ tournamentId: tournamentOid })
+    .sort({ matchNumber: -1 })
+    .limit(1)
+    .toArray();
   const nextNo = (last[0]?.matchNumber || 0) + 1;
   const roundNo = Number(body.roundNumber || last[0]?.roundNumber || 1);
 
@@ -113,6 +132,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     sideA: a.ids,
     sideB: b.ids,
     mapName,
+  });
+
+  await enqueueBotEvent({
+    guildId: String(t.guildId),
+    type: "match.sync_channels",
+    actorId: actor!.discordId,
+    tournamentId: tournamentOid,
+    matchId: createdId,
   });
 
   const finalDoc = await matches.findOne({ _id: createdId });
