@@ -1,5 +1,7 @@
 "use client";
 
+import type { CSSProperties } from "react";
+
 import { useMemo, useState } from "react";
 import { Calendar, Crown, Image as ImageIcon, MapPin, Swords, X } from "lucide-react";
 import { MATCH_STATUS_COLORS, type MatchRow, type PowerBracket } from "@/lib/tournament-types";
@@ -90,7 +92,16 @@ export function BracketBoard({ matches, brackets }: { matches: MatchRow[]; brack
                           <span className="truncate rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-300">{m.bracketName}</span>
                         )}
                       </div>
-                      <span className="rounded-full px-2 py-0.5 text-[9px] font-extrabold uppercase" style={{ backgroundColor: st.bg, color: st.color }}>
+                      <span
+                        className="sse-status-pill rounded-full px-2 py-0.5 text-[9px] font-extrabold uppercase"
+                        style={
+                          {
+                            backgroundColor: st.bg,
+                            "--pill-dark": st.color,
+                            "--pill-light": st.lightColor,
+                          } as CSSProperties
+                        }
+                      >
                         {st.label}
                       </span>
                     </div>

@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { getCollections, toObjectId, writeAuditLog } from "@/lib/mongodb";
-import { canManageGuildOrTournament, findBracketForPower } from "@/lib/tournament-service";
+import { resolveTournamentAccess } from "@/lib/rbac";
+import { findBracketForPower } from "@/lib/tournament-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,8 +32,16 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
   const t = await tournaments.findOne({ _id: tid });
   if (!t) return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
 
-  if (!(await canManageGuildOrTournament(session, String(t.guildId), String(t.ownerId || "")))) {
-    return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+  const { access } = await resolveTournamentAccess(session, t);
+  if (!access.canManageTournament) {
+    return NextResponse.json(
+      {
+        error: access.isFairPlayLocked
+          ? "Fair-Play Guard: registered participants cannot review squad power in this tournament."
+          : "Moderator or Owner permission required.",
+      },
+      { status: 403 }
+    );
   }
 
   const regOid = toObjectId(parsed.data.registrationId);
@@ -41,6 +50,10 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
   if (!reg) return NextResponse.json({ error: "Registration not found." }, { status: 404 });
 
   const actorId = session.user.discordId || session.user.sub;
+  if (session.user.discordId && String(reg.userId) === String(session.user.discordId)) {
+    return NextResponse.json({ error: "You cannot review your own submission." }, { status: 403 });
+  }
+
   const now = new Date();
   const { action, verifiedAverage, bracketId, reason } = parsed.data;
 

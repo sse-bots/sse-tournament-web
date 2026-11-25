@@ -9,7 +9,7 @@ import { SITE_SETTINGS } from "@/lib/site-settings";
 function SignInInner() {
   const params = useSearchParams();
   const error = params.get("error");
-  const nextPath = params.get("next") || "/dashboard";
+  const nextPath = params.get("next") || "/servers";
 
   return (
     <div className="mx-auto mt-8 max-w-md">

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { getCollections, toIso, toObjectId, writeAuditLog } from "@/lib/mongodb";
-import { canManageGuildOrTournament } from "@/lib/tournament-service";
+import { resolveServerAccess } from "@/lib/rbac";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,7 +47,7 @@ export async function POST(req: Request) {
   }
 
   const { guildId, name } = parsed.data;
-  const allowed = await canManageGuildOrTournament(session, guildId);
+  const allowed = (await resolveServerAccess(session, guildId)).access.canManageGames;
   if (!allowed) {
     return NextResponse.json(
       { error: "You do not have Manage Server permission for this guild." },
@@ -98,7 +98,7 @@ export async function DELETE(req: Request) {
   const game = await games.findOne({ _id: oid });
   if (!game) return NextResponse.json({ error: "Game not found." }, { status: 404 });
 
-  const allowed = await canManageGuildOrTournament(session, String(game.guildId));
+  const allowed = (await resolveServerAccess(session, String(game.guildId))).access.canManageGames;
   if (!allowed) return NextResponse.json({ error: "Forbidden." }, { status: 403 });
 
   await games.updateOne({ _id: oid }, { $set: { active: false, updatedAt: new Date() } });

@@ -14,11 +14,11 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const rawNext = searchParams.get("next") || "/dashboard";
+  const rawNext = searchParams.get("next") || "/servers";
   const nextPath =
     rawNext.startsWith("/") && !rawNext.startsWith("//")
       ? rawNext
-      : "/dashboard";
+      : "/servers";
 
   const clientId = (process.env.SSE_OAUTH_CLIENT_ID || "").trim();
   if (!clientId) {
