@@ -1,34 +1,115 @@
 import { NextResponse } from "next/server";
-import { getCollections, serializeDocs } from "@/lib/mongo";
+import {
+  fetchUserDiscordGuilds,
+  getSession,
+  hasManageGuildPermission,
+} from "@/lib/auth";
+import { getCollections } from "@/lib/mongodb";
+import type { ManagedGuild } from "@/lib/tournament-types";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  try {
-    const { guildConfig, tournaments, games } = await getCollections();
-    const configs = await guildConfig.find({}).toArray();
-    const tGuilds = await tournaments.distinct("guildId");
-    const gGuilds = await games.distinct("guildId");
-    const idSet = new Set<string>();
-    if (process.env.DEFAULT_GUILD_ID) idSet.add(process.env.DEFAULT_GUILD_ID);
-    for (const c of configs) if (c.guildId) idSet.add(String(c.guildId));
-    for (const id of tGuilds) if (id) idSet.add(String(id));
-    for (const id of gGuilds) if (id) idSet.add(String(id));
-
-    const configMap = new Map(configs.map((c) => [String(c.guildId), serializeDocs([c])[0]]));
-    const guilds = Array.from(idSet).map((guildId) => ({
-      guildId,
-      config: configMap.get(guildId) || null,
-    }));
-    return NextResponse.json({
-      guilds,
-      defaultGuildId: process.env.DEFAULT_GUILD_ID || guilds[0]?.guildId || "",
-    });
-  } catch (err) {
-    console.error("[api/guilds]", err);
-    return NextResponse.json(
-      { guilds: [], defaultGuildId: process.env.DEFAULT_GUILD_ID || "", error: "Database unavailable" },
-      { status: 200 }
-    );
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  const [{ guildConfig, tournaments, games }, discordGuilds] =
+    await Promise.all([
+      getCollections(),
+      fetchUserDiscordGuilds(session.accessToken),
+    ]);
+
+  const guildMap = new Map<string, ManagedGuild>();
+
+  for (const g of discordGuilds) {
+    const canManage =
+      session.user.isGlobalAdmin || hasManageGuildPermission(g);
+    if (!canManage) continue;
+    const iconUrl = g.icon
+      ? `https://cdn.discordapp.com/icons/${g.id}/${g.icon}.png?size=128`
+      : null;
+    guildMap.set(String(g.id), {
+      id: String(g.id),
+      name: g.name,
+      icon: iconUrl,
+      owner: Boolean(g.owner),
+      canManage: true,
+      botConfigured: false,
+      tournamentCount: 0,
+      gameCount: 0,
+    });
+  }
+
+  const dbGuildQuery = session.user.isGlobalAdmin
+    ? {}
+    : session.user.discordId
+      ? { ownerId: session.user.discordId }
+      : { ownerId: session.user.sub };
+
+  const ownedTourneys = await tournaments
+    .find(dbGuildQuery, { projection: { guildId: 1 } })
+    .toArray();
+  for (const t of ownedTourneys) {
+    const gid = String(t.guildId || "");
+    if (gid && !guildMap.has(gid)) {
+      guildMap.set(gid, {
+        id: gid,
+        name: `Discord Server (${gid.slice(-6)})`,
+        icon: null,
+        owner: false,
+        canManage: true,
+        botConfigured: false,
+        tournamentCount: 0,
+        gameCount: 0,
+      });
+    }
+  }
+
+  const guildIds = Array.from(guildMap.keys());
+  if (guildIds.length > 0) {
+    const [configs, tourneyAgg, gameAgg] = await Promise.all([
+      guildConfig.find({ guildId: { $in: guildIds } }).toArray(),
+      tournaments
+        .aggregate([
+          { $match: { guildId: { $in: guildIds }, status: { $ne: "archived" } } },
+          { $group: { _id: "$guildId", count: { $sum: 1 } } },
+        ])
+        .toArray(),
+      games
+        .aggregate([
+          { $match: { guildId: { $in: guildIds }, active: true } },
+          { $group: { _id: "$guildId", count: { $sum: 1 } } },
+        ])
+        .toArray(),
+    ]);
+
+    const configuredSet = new Set(configs.map((c) => String(c.guildId)));
+    const tCountMap = new Map(
+      tourneyAgg.map((r) => [String(r._id), Number(r.count)])
+    );
+    const gCountMap = new Map(
+      gameAgg.map((r) => [String(r._id), Number(r.count)])
+    );
+
+    for (const [gid, item] of guildMap.entries()) {
+      item.botConfigured = configuredSet.has(gid) || (tCountMap.get(gid) || 0) > 0;
+      item.tournamentCount = tCountMap.get(gid) || 0;
+      item.gameCount = gCountMap.get(gid) || 0;
+    }
+  }
+
+  const list = Array.from(guildMap.values()).sort(
+    (a, b) =>
+      Number(b.botConfigured) - Number(a.botConfigured) ||
+      b.tournamentCount - a.tournamentCount ||
+      a.name.localeCompare(b.name)
+  );
+
+  return NextResponse.json(
+    { guilds: list },
+    { headers: { "Cache-Control": "no-store" } }
+  );
 }

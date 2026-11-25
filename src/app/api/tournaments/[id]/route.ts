@@ -1,210 +1,291 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getCollections, toObjectId, serializeDoc, serializeDocs, writeAudit } from "@/lib/mongo";
-import { getSessionActor, canManageTournament, canReviewTournamentResult } from "@/lib/permissions";
-import { enqueueBotEvent } from "@/lib/bot-sync";
-import { SCORING_SYSTEMS, TEAM_POWER_RULES } from "@/lib/types";
+import { NextResponse } from "next/server";
+import { ObjectId } from "mongodb";
+import { z } from "zod";
+import { getSession } from "@/lib/auth";
+import { getCollections, toObjectId, writeAuditLog } from "@/lib/mongodb";
+import {
+  bracketsOverlap,
+  canManageGuildOrTournament,
+  getFullTournamentDetail,
+} from "@/lib/tournament-service";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+const patchSchema = z.object({
+  action: z
+    .enum([
+      "update_settings",
+      "open_registration",
+      "close_registration",
+      "reopen_registration",
+      "start",
+      "pause",
+      "resume",
+      "finish",
+      "cancel",
+      "archive",
+      "add_bracket",
+      "delete_bracket",
+    ])
+    .default("update_settings"),
+  name: z.string().trim().min(2).max(100).optional(),
+  description: z.string().trim().max(1000).optional(),
+  maps: z.array(z.string().trim().min(1)).max(25).optional(),
+  scoring: z.enum(["wins", "power", "points", "combined", "win_percentage"]).optional(),
+  proofRequired: z.boolean().optional(),
+  approvalRequired: z.boolean().optional(),
+  allowDraws: z.boolean().optional(),
+  allowIncompleteTeams: z.boolean().optional(),
+  teamInvitesOnly: z.boolean().optional(),
+  swissRounds: z.number().int().min(0).max(20).optional(),
+  seriesBestOf: z.number().int().min(1).max(15).optional(),
+  matchDeadlineHours: z.number().int().min(1).max(720).optional(),
+  matchDurationMinutes: z.number().int().min(15).max(240).optional(),
+  prizes: z.object({
+    first: z.string().trim().max(120).optional(),
+    second: z.string().trim().max(120).optional(),
+    third: z.string().trim().max(120).optional(),
+  }).optional(),
+  reason: z.string().trim().max(240).optional(),
+  force: z.boolean().optional(),
+  bracket: z.object({
+    name: z.string().trim().min(1).max(60),
+    minPower: z.number().min(0),
+    maxPower: z.number().min(0).nullable().optional(),
+    allowOverlap: z.boolean().optional(),
+  }).optional(),
+  bracketName: z.string().trim().optional(),
+});
+
+export async function GET(
+  _req: Request,
+  context: { params: Promise<{ id: string }> }
+) {
+  const { id } = await context.params;
   const oid = toObjectId(id);
   if (!oid) return NextResponse.json({ error: "Invalid tournament ID." }, { status: 400 });
 
-  const { tournaments, games, registrations, teams, matches } = await getCollections();
-  const t = await tournaments.findOne({ _id: oid });
-  if (!t) return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
+  const { tournaments } = await getCollections();
+  const doc = await tournaments.findOne({ _id: oid });
+  if (!doc) return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
 
-  const [game, regDocs, teamDocs, matchDocs, actor] = await Promise.all([
-    games.findOne({ _id: t.gameId }),
-    registrations.find({ tournamentId: oid }).sort({ createdAt: -1 }).toArray(),
-    teams.find({ tournamentId: oid }).sort({ name: 1 }).toArray(),
-    matches.find({ tournamentId: oid }).sort({ roundNumber: 1, matchNumber: 1 }).toArray(),
-    getSessionActor(String(t.guildId)),
-  ]);
-
-  const manageCheck = await canManageTournament(actor, t);
-  const reviewCheck = await canReviewTournamentResult(actor, t);
-  const teamNameMap = new Map(teamDocs.map((tm) => [String(tm._id), String(tm.name)]));
-
-  const enrichedMatches = serializeDocs(matchDocs).map((m) => ({
-    ...m,
-    sideATeamName: m.sideATeamId ? teamNameMap.get(String(m.sideATeamId)) || null : null,
-    sideBTeamName: m.sideBTeamId ? teamNameMap.get(String(m.sideBTeamId)) || null : null,
-  }));
-
-  return NextResponse.json({
-    tournament: { ...serializeDoc(t), gameName: game?.name || "Unknown Game" },
-    registrations: serializeDocs(regDocs),
-    teams: serializeDocs(teamDocs),
-    matches: enrichedMatches,
-    permissions: {
-      canManage: manageCheck.allowed,
-      manageReason: manageCheck.reason || null,
-      suspendedByParticipation: Boolean(manageCheck.suspendedByParticipation),
-      canReview: reviewCheck.allowed,
-      isBotAdmin: Boolean(actor?.isBotAdmin),
-      discordId: actor?.discordId || null,
-    },
-  });
+  const session = await getSession();
+  const canManage = await canManageGuildOrTournament(session, String(doc.guildId), String(doc.ownerId || ""));
+  const detail = await getFullTournamentDetail(doc, canManage);
+  return NextResponse.json({ ...detail, canManage }, { headers: { "Cache-Control": "no-store" } });
 }
 
-export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+export async function PATCH(
+  req: Request,
+  context: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+
+  const { id } = await context.params;
   const oid = toObjectId(id);
   if (!oid) return NextResponse.json({ error: "Invalid tournament ID." }, { status: 400 });
 
-  const { tournaments, teams } = await getCollections();
+  const { tournaments, matches } = await getCollections();
   const t = await tournaments.findOne({ _id: oid });
   if (!t) return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
 
-  const actor = await getSessionActor(String(t.guildId));
-  const check = await canManageTournament(actor, t);
-  if (!check.allowed) return NextResponse.json({ error: check.reason }, { status: 403 });
+  const allowed = await canManageGuildOrTournament(session, String(t.guildId), String(t.ownerId || ""));
+  if (!allowed) return NextResponse.json({ error: "Forbidden." }, { status: 403 });
 
-  const body = await req.json();
+  const body = await req.json().catch(() => null);
+  const parsed = patchSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid payload." }, { status: 400 });
+  }
 
-  if (body.announcementChannelId !== undefined && Object.keys(body).length === 1) {
-    await tournaments.updateOne(
-      { _id: oid },
-      { $set: { announcementChannelId: String(body.announcementChannelId || "").trim() || null, updatedAt: new Date() } }
-    );
-    await writeAudit(String(t.guildId), actor!.discordId, "tournament.announcement_channel", "Tournament", oid, {
-      channelId: body.announcementChannelId,
-    });
+  const d = parsed.data;
+  const actorId = session.user.discordId || session.user.sub;
+  const now = new Date();
+
+  if (d.action === "open_registration") {
+    if (t.settingsLocked || !["draft", "registration_closed"].includes(String(t.status))) {
+      return NextResponse.json({ error: "Registration can only open before start." }, { status: 400 });
+    }
+    await tournaments.updateOne({ _id: oid }, { $set: { status: "registration", registrationOpenedAt: now, teamsLocked: false, updatedAt: now } });
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "registration.open", targetType: "Tournament", targetId: id });
     return NextResponse.json({ ok: true });
   }
 
-  if (t.settingsLocked || !["draft", "registration", "registration_closed"].includes(String(t.status))) {
-    return NextResponse.json({ error: "Tournament configuration is locked after start." }, { status: 409 });
+  if (d.action === "close_registration") {
+    if (t.status !== "registration") return NextResponse.json({ error: "Registration is not open." }, { status: 400 });
+    await tournaments.updateOne({ _id: oid }, { $set: { status: "registration_closed", registrationClosedAt: now, teamsLocked: true, updatedAt: now } });
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "registration.close", targetType: "Tournament", targetId: id });
+    return NextResponse.json({ ok: true });
   }
 
-  const changes: Record<string, unknown> = { updatedAt: new Date() };
-
-  if (body.name !== undefined) {
-    const n = String(body.name).trim();
-    if (!n) return NextResponse.json({ error: "Name cannot be empty." }, { status: 400 });
-    changes.name = n;
-    changes.nameLower = n.toLowerCase();
-  }
-  if (body.description !== undefined) changes.description = String(body.description);
-  if (body.bracketsEnabled !== undefined) changes.bracketsEnabled = Boolean(body.bracketsEnabled);
-
-  if (body.scoring !== undefined) {
-    if (!SCORING_SYSTEMS.includes(body.scoring)) {
-      return NextResponse.json({ error: "Invalid scoring system." }, { status: 400 });
+  if (d.action === "reopen_registration") {
+    if (t.status !== "registration_closed" || t.settingsLocked) {
+      return NextResponse.json({ error: "Only a closed, unstarted tournament can reopen." }, { status: 400 });
     }
-    changes.scoring = body.scoring;
-  }
-
-  if (body.seriesBestOf !== undefined) {
-    const bo = Number(body.seriesBestOf);
-    if (!Number.isInteger(bo) || bo < 1 || bo > 15 || bo % 2 === 0) {
-      return NextResponse.json({ error: "Best-of series must be an odd integer (1, 3, 5, ..., 15)." }, { status: 400 });
+    if ((await matches.countDocuments({ tournamentId: oid })) > 0) {
+      return NextResponse.json({ error: "Matches already exist." }, { status: 400 });
     }
-    changes.seriesBestOf = bo;
+    await tournaments.updateOne({ _id: oid }, { $set: { status: "registration", teamsLocked: false, registrationReopenedAt: now, updatedAt: now } });
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "registration.reopen", targetType: "Tournament", targetId: id });
+    return NextResponse.json({ ok: true });
   }
 
-  if (body.swissRounds !== undefined) changes.swissRounds = Math.max(0, Math.min(20, Number(body.swissRounds)));
-  if (body.maps !== undefined) {
-    const arr = Array.isArray(body.maps)
-      ? body.maps.map((m: unknown) => String(m).trim()).filter(Boolean)
-      : String(body.maps).split(",").map((m) => m.trim()).filter(Boolean);
-    changes.maps = arr.slice(0, 25);
-  }
-
-  if (body.schedule !== undefined) {
-    const s = body.schedule || {};
-    const startAt = s.startAt ? new Date(s.startAt) : t.schedule?.startAt || null;
-    const endAt = s.endAt ? new Date(s.endAt) : t.schedule?.endAt || null;
-    if (startAt && endAt && endAt <= startAt) {
-      return NextResponse.json({ error: "End time must be after start time." }, { status: 400 });
+  if (d.action === "start") {
+    if (!["registration_closed", "matchmaking"].includes(String(t.status))) {
+      return NextResponse.json({ error: "Close registration before starting." }, { status: 400 });
     }
-    changes.schedule = {
-      startAt: s.startAt === "" ? null : startAt,
-      endAt: s.endAt === "" ? null : endAt,
-      matchDeadlineHours: Math.max(1, Math.min(720, Number(s.matchDeadlineHours ?? t.schedule?.matchDeadlineHours ?? 48))),
-      matchDurationMinutes: Math.max(15, Math.min(240, Number(s.matchDurationMinutes ?? t.schedule?.matchDurationMinutes ?? 60))),
-    };
-  }
-
-  if (body.resultPolicy !== undefined) {
-    changes.resultPolicy = {
-      proofRequired: Boolean(body.resultPolicy.proofRequired ?? t.resultPolicy?.proofRequired ?? true),
-      approvalRequired: Boolean(body.resultPolicy.approvalRequired ?? t.resultPolicy?.approvalRequired ?? true),
-      allowDraws: Boolean(body.resultPolicy.allowDraws ?? t.resultPolicy?.allowDraws ?? false),
-    };
-  }
-
-  if (body.tieBreakers !== undefined) {
-    const tb = Array.isArray(body.tieBreakers)
-      ? body.tieBreakers
-      : String(body.tieBreakers).split(",").map((x) => x.trim()).filter(Boolean);
-    changes.tieBreakers = tb.slice(0, 5);
-  }
-
-  if (body.winWeight !== undefined) changes.winWeight = Number(body.winWeight);
-  if (body.powerWeight !== undefined) changes.powerWeight = Number(body.powerWeight);
-  if (body.pointsWeight !== undefined) changes.pointsWeight = Number(body.pointsWeight);
-  if (body.leaderboardUpdateHours !== undefined) changes.leaderboardUpdateHours = Number(body.leaderboardUpdateHours);
-
-  if (t.mode === "team") {
-    const minS = body.teamSizeMin !== undefined ? Number(body.teamSizeMin) : Number(t.teamSizeMin || 2);
-    const maxS = body.teamSizeMax !== undefined ? Number(body.teamSizeMax) : Number(t.teamSizeMax || 5);
-    if (minS < 1 || minS > maxS || maxS > 20) {
-      return NextResponse.json({ error: "Minimum team size cannot exceed maximum (1..20)." }, { status: 400 });
+    if ((await matches.countDocuments({ tournamentId: oid })) === 0) {
+      return NextResponse.json({ error: "Generate matches with /matchmaking in Discord first." }, { status: 400 });
     }
-    changes.teamSizeMin = minS;
-    changes.teamSizeMax = maxS;
+    await tournaments.updateOne({ _id: oid }, { $set: { status: "in_progress", settingsLocked: true, teamsLocked: true, startedAt: now, updatedAt: now } });
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "tournament.start", targetType: "Tournament", targetId: id });
+    return NextResponse.json({ ok: true });
+  }
 
-    if (body.teamPowerRule !== undefined) {
-      if (!TEAM_POWER_RULES.includes(body.teamPowerRule)) {
-        return NextResponse.json({ error: "Invalid teamPowerRule." }, { status: 400 });
+  if (d.action === "pause") {
+    if (t.status !== "in_progress") return NextResponse.json({ error: "Tournament is not in progress." }, { status: 400 });
+    await tournaments.updateOne({ _id: oid }, { $set: { status: "paused", pausedAt: now, pauseReason: d.reason || "", updatedAt: now } });
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "tournament.pause", targetType: "Tournament", targetId: id, details: { reason: d.reason || "" } });
+    return NextResponse.json({ ok: true });
+  }
+
+  if (d.action === "resume") {
+    if (t.status !== "paused") return NextResponse.json({ error: "Tournament is not paused." }, { status: 400 });
+    await tournaments.updateOne({ _id: oid }, { $set: { status: "in_progress", resumedAt: now, updatedAt: now } });
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "tournament.resume", targetType: "Tournament", targetId: id });
+    return NextResponse.json({ ok: true });
+  }
+
+  if (d.action === "finish") {
+    if (!["in_progress", "paused"].includes(String(t.status))) {
+      return NextResponse.json({ error: "Only an in-progress or paused tournament can be finished." }, { status: 400 });
+    }
+    const pending = await matches.countDocuments({
+      tournamentId: oid,
+      status: { $in: ["scheduled", "ready", "in_progress", "pending_review", "rejected", "disputed", "postponed"] },
+    });
+    if (pending > 0 && !d.force) {
+      return NextResponse.json({ error: `There are ${pending} unresolved match(es).` }, { status: 400 });
+    }
+    const detail = await getFullTournamentDetail(t, false);
+    const finalStandings: Array<Record<string, unknown>> = [];
+    const bracketGroups = detail.tournament.bracketsEnabled
+      ? detail.tournament.brackets.map((b) => ({ name: b.name, id: b.id }))
+      : [{ name: "Overall", id: null as string | null }];
+
+    for (const bg of bracketGroups) {
+      if (detail.tournament.mode === "individual") {
+        detail.registrations
+          .filter((r) => r.status === "registered" && (bg.id === null || r.bracketId === bg.id))
+          .slice(0, 3)
+          .forEach((row, idx) => {
+            finalStandings.push({ bracket: bg.name, place: idx + 1, userId: row.userId, wins: row.wins, losses: row.losses, points: row.points, power: row.verifiedSquadPower });
+          });
+      } else {
+        detail.teams
+          .filter((tm) => tm.status === "active" && (bg.id === null || tm.bracketId === bg.id))
+          .slice(0, 3)
+          .forEach((row, idx) => {
+            finalStandings.push({ bracket: bg.name, place: idx + 1, teamId: row.id, teamName: row.name, wins: row.wins, losses: row.losses, points: row.points });
+          });
       }
-      changes.teamPowerRule = body.teamPowerRule;
     }
-    if (body.allowIncompleteTeams !== undefined) changes.allowIncompleteTeams = Boolean(body.allowIncompleteTeams);
-    if (body.teamInvitesOnly !== undefined) changes.teamInvitesOnly = Boolean(body.teamInvitesOnly);
-    if (body.allowMultipleTeams === false) {
-      const activeTeams = await teams.find({ tournamentId: oid, status: "active" }).toArray();
-      const counts = new Map<string, number>();
-      for (const tm of activeTeams) {
-        for (const uid of tm.memberIds || []) {
-          counts.set(String(uid), (counts.get(String(uid)) || 0) + 1);
-        }
-      }
-      if (Array.from(counts.values()).some((c) => c > 1)) {
-        return NextResponse.json(
-          { error: "Cannot disable multiple teams while players belong to multiple active teams." },
-          { status: 409 }
-        );
-      }
-      changes.allowMultipleTeams = false;
-    } else if (body.allowMultipleTeams === true) {
-      changes.allowMultipleTeams = true;
-    }
+
+    await tournaments.updateOne(
+      { _id: oid },
+      { $set: { status: "completed", completedAt: now, standingsFrozen: true, finishedWithUnresolvedMatches: pending > 0, finalStandings, finalStandingsFrozenAt: now, updatedAt: now } }
+    );
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "tournament.finish", targetType: "Tournament", targetId: id, details: { force: Boolean(d.force), pending, placements: finalStandings.length } });
+    return NextResponse.json({ ok: true });
   }
 
-  const parseRoles = (raw: unknown) =>
-    (Array.isArray(raw) ? raw : String(raw).split(",")).map((s: unknown) => String(s).trim()).filter(Boolean);
-
-  if (body.managerRoleIds !== undefined) changes.managerRoleIds = parseRoles(body.managerRoleIds);
-  if (body.reviewerRoleIds !== undefined) changes.reviewerRoleIds = parseRoles(body.reviewerRoleIds);
-  if (body.headManagerRoleIds !== undefined) changes.headManagerRoleIds = parseRoles(body.headManagerRoleIds);
-  if (body.awardRoleIds !== undefined) changes.awardRoleIds = body.awardRoleIds;
-  if (body.prizeDescriptions !== undefined) changes.prizeDescriptions = body.prizeDescriptions;
-  if (body.announcementChannelId !== undefined) {
-    changes.announcementChannelId = String(body.announcementChannelId || "").trim() || null;
+  if (d.action === "cancel") {
+    await tournaments.updateOne({ _id: oid }, { $set: { status: "cancelled", cancelledAt: now, cancelReason: d.reason || "", updatedAt: now } });
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "tournament.cancel", targetType: "Tournament", targetId: id });
+    return NextResponse.json({ ok: true });
   }
 
-  await tournaments.updateOne({ _id: oid }, { $set: changes });
-  await writeAudit(String(t.guildId), actor!.discordId, "tournament.configure", "Tournament", oid, changes);
-  const updated = await tournaments.findOne({ _id: oid });
-  return NextResponse.json({ tournament: serializeDoc(updated) });
+  if (d.action === "archive") {
+    if (!["completed", "cancelled"].includes(String(t.status))) {
+      return NextResponse.json({ error: "Only completed or cancelled tournaments can be archived." }, { status: 400 });
+    }
+    await tournaments.updateOne({ _id: oid }, { $set: { status: "archived", updatedAt: now } });
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "tournament.archive", targetType: "Tournament", targetId: id });
+    return NextResponse.json({ ok: true });
+  }
+
+  if (d.action === "add_bracket") {
+    if (!d.bracket) return NextResponse.json({ error: "Bracket data required." }, { status: 400 });
+    if (t.settingsLocked || !["draft", "registration"].includes(String(t.status))) {
+      return NextResponse.json({ error: "Brackets are locked after start." }, { status: 400 });
+    }
+    if (!t.bracketsEnabled) return NextResponse.json({ error: "Brackets disabled." }, { status: 400 });
+    const maxP = d.bracket.maxPower ?? null;
+    if (maxP !== null && maxP < d.bracket.minPower) {
+      return NextResponse.json({ error: "Max power must be >= min power." }, { status: 400 });
+    }
+    const existing = Array.isArray(t.brackets) ? t.brackets : [];
+    if (
+      !d.bracket.allowOverlap &&
+      existing.some((b: { minPower: number; maxPower?: number | null }) =>
+        bracketsOverlap(d.bracket!.minPower, maxP, Number(b.minPower), b.maxPower ?? null)
+      )
+    ) {
+      return NextResponse.json({ error: "Range overlaps an existing bracket." }, { status: 400 });
+    }
+    await tournaments.updateOne(
+      { _id: oid },
+      { $push: { brackets: { _id: new ObjectId(), name: d.bracket.name, minPower: d.bracket.minPower, maxPower: maxP, placementRules: "standard" } } as never, $set: { updatedAt: now } }
+    );
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "bracket.add", targetType: "Tournament", targetId: id, details: { bracket: d.bracket.name } });
+    return NextResponse.json({ ok: true });
+  }
+
+  if (d.action === "delete_bracket") {
+    if (!d.bracketName) return NextResponse.json({ error: "bracketName required." }, { status: 400 });
+    if (t.settingsLocked || !["draft", "registration"].includes(String(t.status))) {
+      return NextResponse.json({ error: "Brackets are locked after start." }, { status: 400 });
+    }
+    await tournaments.updateOne({ _id: oid }, { $pull: { brackets: { name: d.bracketName } } as never, $set: { updatedAt: now } });
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "bracket.delete", targetType: "Tournament", targetId: id, details: { name: d.bracketName } });
+    return NextResponse.json({ ok: true });
+  }
+
+  if (t.settingsLocked) {
+    return NextResponse.json({ error: "Tournament settings are locked once play begins." }, { status: 400 });
+  }
+
+  const updates: Record<string, unknown> = { updatedAt: now };
+  if (d.name !== undefined) { updates.name = d.name; updates.nameLower = d.name.toLowerCase(); }
+  if (d.description !== undefined) updates.description = d.description;
+  if (d.maps !== undefined) updates.maps = d.maps;
+  if (d.scoring !== undefined) updates.scoring = d.scoring;
+  if (d.proofRequired !== undefined) updates["resultPolicy.proofRequired"] = d.proofRequired;
+  if (d.approvalRequired !== undefined) updates["resultPolicy.approvalRequired"] = d.approvalRequired;
+  if (d.allowDraws !== undefined) updates["resultPolicy.allowDraws"] = d.allowDraws;
+  if (d.allowIncompleteTeams !== undefined) updates.allowIncompleteTeams = d.allowIncompleteTeams;
+  if (d.teamInvitesOnly !== undefined) updates.teamInvitesOnly = d.teamInvitesOnly;
+  if (d.swissRounds !== undefined) updates.swissRounds = d.swissRounds;
+  if (d.seriesBestOf !== undefined) updates.seriesBestOf = d.seriesBestOf;
+  if (d.matchDeadlineHours !== undefined) updates["schedule.matchDeadlineHours"] = d.matchDeadlineHours;
+  if (d.matchDurationMinutes !== undefined) updates["schedule.matchDurationMinutes"] = d.matchDurationMinutes;
+  if (d.prizes !== undefined) updates.prizeDescriptions = d.prizes;
+
+  await tournaments.updateOne({ _id: oid }, { $set: updates });
+  await writeAuditLog({ guildId: String(t.guildId), actorId, action: "tournament.configure", targetType: "Tournament", targetId: id, details: updates });
+  return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+export async function DELETE(
+  _req: Request,
+  context: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+
+  const { id } = await context.params;
   const oid = toObjectId(id);
   if (!oid) return NextResponse.json({ error: "Invalid tournament ID." }, { status: 400 });
 
@@ -212,25 +293,12 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
   const t = await tournaments.findOne({ _id: oid });
   if (!t) return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
 
-  const actor = await getSessionActor(String(t.guildId));
-  const check = await canManageTournament(actor, t);
-  if (!check.allowed) return NextResponse.json({ error: check.reason }, { status: 403 });
+  const allowed = await canManageGuildOrTournament(session, String(t.guildId), String(t.ownerId || ""));
+  if (!allowed) return NextResponse.json({ error: "Forbidden." }, { status: 403 });
 
-  const disputedCount = await matches.countDocuments({ tournamentId: oid, status: "disputed" });
-  if (disputedCount > 0) {
-    return NextResponse.json(
-      { error: "Deletion blocked: this tournament has disputed matches. Resolve them or archive first." },
-      { status: 409 }
-    );
+  if ((await matches.countDocuments({ tournamentId: oid, status: "disputed" })) > 0) {
+    return NextResponse.json({ error: "Deletion blocked: resolve disputed matches first." }, { status: 400 });
   }
-
-  const [relatedMatches, relatedTickets] = await Promise.all([
-    matches.find({ tournamentId: oid, channelId: { $exists: true, $ne: null } }).toArray(),
-    tickets.find({ tournamentId: oid, channelId: { $exists: true, $ne: null } }).toArray(),
-  ]);
-  const channelIds = [...relatedMatches, ...relatedTickets]
-    .map((doc) => (doc.channelId ? String(doc.channelId).trim() : ""))
-    .filter(Boolean);
 
   await Promise.all([
     registrations.deleteMany({ tournamentId: oid }),
@@ -241,23 +309,6 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     tournaments.deleteOne({ _id: oid }),
   ]);
 
-  if (channelIds.length > 0) {
-    await enqueueBotEvent({
-      guildId: String(t.guildId),
-      type: "match.cleanup_channels",
-      actorId: actor!.discordId,
-      tournamentId: oid,
-      payload: {
-        channelIds,
-        deleteChannels: false,
-        reason: `Tournament "${t.name}" deleted on Web Arena; channel archived.`,
-      },
-    });
-  }
-
-  await writeAudit(String(t.guildId), actor!.discordId, "tournament.delete", "Tournament", oid, {
-    name: t.name,
-    archivedChannels: channelIds.length,
-  });
+  await writeAuditLog({ guildId: String(t.guildId), actorId: session.user.discordId || session.user.sub, action: "tournament.delete", targetType: "Tournament", targetId: id, details: { name: t.name } });
   return NextResponse.json({ ok: true });
 }
