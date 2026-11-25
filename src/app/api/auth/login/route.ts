@@ -1,0 +1,61 @@
+import crypto from "crypto";
+import { NextResponse } from "next/server";
+import {
+  OAUTH_STATE_COOKIE,
+  createPkcePair,
+  encryptCookiePayload,
+  getAccountsBaseUrl,
+  getAppBaseUrl,
+  getCookieSecurityOptions,
+} from "@/lib/auth";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const rawNext = searchParams.get("next") || "/dashboard";
+  const nextPath =
+    rawNext.startsWith("/") && !rawNext.startsWith("//")
+      ? rawNext
+      : "/dashboard";
+
+  const clientId = (process.env.SSE_OAUTH_CLIENT_ID || "").trim();
+  if (!clientId) {
+    return NextResponse.redirect(
+      new URL(
+        `/sign-in?error=${encodeURIComponent(
+          "SSE_OAUTH_CLIENT_ID is not configured in environment variables."
+        )}`,
+        getAppBaseUrl()
+      )
+    );
+  }
+
+  const state = crypto.randomBytes(24).toString("base64url");
+  const { verifier, challenge } = createPkcePair();
+  const redirectUri = `${getAppBaseUrl()}/api/auth/callback`;
+
+  const authUrl = new URL(`${getAccountsBaseUrl()}/api/auth/oauth2/authorize`);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", clientId);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set(
+    "scope",
+    "openid profile email offline_access sse:servers sse:roles"
+  );
+  authUrl.searchParams.set("state", state);
+  authUrl.searchParams.set("code_challenge", challenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  const payload = encryptCookiePayload({
+    state,
+    verifier,
+    nextPath,
+    createdAt: Date.now(),
+  });
+
+  const res = NextResponse.redirect(authUrl.toString());
+  res.cookies.set(OAUTH_STATE_COOKIE, payload, getCookieSecurityOptions(600));
+  return res;
+}

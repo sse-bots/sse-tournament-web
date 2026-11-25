@@ -1,52 +1,107 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getCollections, serializeDocs, serializeDoc, writeAudit } from "@/lib/mongo";
-import { getSessionActor } from "@/lib/permissions";
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { getSession } from "@/lib/auth";
+import { getCollections, toIso, toObjectId, writeAuditLog } from "@/lib/mongodb";
+import { canManageGuildOrTournament } from "@/lib/tournament-service";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(req: NextRequest) {
-  try {
-    const { games } = await getCollections();
-    const guildId = req.nextUrl.searchParams.get("guildId");
-    const query: Record<string, unknown> = { active: true };
-    if (guildId) query.guildId = guildId;
-    const rows = await games.find(query).sort({ name: 1 }).limit(100).toArray();
-    return NextResponse.json({ games: serializeDocs(rows) });
-  } catch (err) {
-    console.error("[api/games GET]", err);
-    return NextResponse.json({ games: [], error: "Could not load games." }, { status: 500 });
-  }
+const createGameSchema = z.object({
+  guildId: z.string().trim().min(5),
+  name: z.string().trim().min(2).max(60),
+});
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const guildId = (searchParams.get("guildId") || "").trim();
+
+  const { games } = await getCollections();
+  const filter: Record<string, unknown> = { active: true };
+  if (guildId) filter.guildId = guildId;
+
+  const docs = await games.find(filter).sort({ name: 1 }).limit(100).toArray();
+  return NextResponse.json({
+    games: docs.map((g) => ({
+      id: String(g._id),
+      guildId: String(g.guildId || ""),
+      name: String(g.name || ""),
+      active: Boolean(g.active),
+      createdBy: String(g.createdBy || ""),
+      createdAt: toIso(g.createdAt),
+    })),
+  });
 }
 
-export async function POST(req: NextRequest) {
-  const actor = await getSessionActor();
-  if (!actor) return NextResponse.json({ error: "Sign in with SSE Nexus required." }, { status: 401 });
+export async function POST(req: Request) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
 
-  try {
-    const body = await req.json();
-    const name = String(body.name || "").trim();
-    const guildId = String(body.guildId || actor.activeGuildId || "").trim();
-    if (!name) return NextResponse.json({ error: "Game name is required." }, { status: 400 });
-    if (!guildId) return NextResponse.json({ error: "Discord Server (Guild) ID is required." }, { status: 400 });
-
-    const { games } = await getCollections();
-    const existing = await games.findOne({ guildId, nameLower: name.toLowerCase(), active: true });
-    if (existing) {
-      return NextResponse.json({ error: "That game already exists in this server." }, { status: 409 });
-    }
-    const doc = {
-      guildId,
-      name,
-      nameLower: name.toLowerCase(),
-      createdBy: actor.discordId,
-      active: true,
-      createdAt: new Date(),
-    };
-    const res = await games.insertOne(doc);
-    await writeAudit(guildId, actor.discordId, "game.create", "Game", res.insertedId, { name });
-    return NextResponse.json({ game: serializeDoc({ ...doc, _id: res.insertedId }) }, { status: 201 });
-  } catch (err) {
-    console.error("[api/games POST]", err);
-    return NextResponse.json({ error: "Could not create game." }, { status: 500 });
+  const body = await req.json().catch(() => null);
+  const parsed = createGameSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message || "Invalid game data." },
+      { status: 400 }
+    );
   }
+
+  const { guildId, name } = parsed.data;
+  const allowed = await canManageGuildOrTournament(session, guildId);
+  if (!allowed) {
+    return NextResponse.json(
+      { error: "You do not have Manage Server permission for this guild." },
+      { status: 403 }
+    );
+  }
+
+  const { games } = await getCollections();
+  const nameLower = name.toLowerCase();
+  const existing = await games.findOne({ guildId, nameLower });
+  if (existing && existing.active) {
+    return NextResponse.json({ error: `Game "${name}" already exists.` }, { status: 409 });
+  }
+
+  const actorId = session.user.discordId || session.user.sub;
+  if (existing && !existing.active) {
+    await games.updateOne(
+      { _id: existing._id },
+      { $set: { active: true, name, updatedAt: new Date() } }
+    );
+    await writeAuditLog({ guildId, actorId, action: "game.create", targetType: "Game", targetId: String(existing._id), details: { name, reactivated: true } });
+    return NextResponse.json({ ok: true, id: String(existing._id) }, { status: 201 });
+  }
+
+  const result = await games.insertOne({
+    guildId,
+    name,
+    nameLower,
+    createdBy: actorId,
+    active: true,
+    createdAt: new Date(),
+  });
+
+  await writeAuditLog({ guildId, actorId, action: "game.create", targetType: "Game", targetId: String(result.insertedId), details: { name } });
+  return NextResponse.json({ ok: true, id: String(result.insertedId) }, { status: 201 });
+}
+
+export async function DELETE(req: Request) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+
+  const { searchParams } = new URL(req.url);
+  const id = (searchParams.get("id") || "").trim();
+  const oid = toObjectId(id);
+  if (!oid) return NextResponse.json({ error: "Valid game id required." }, { status: 400 });
+
+  const { games } = await getCollections();
+  const game = await games.findOne({ _id: oid });
+  if (!game) return NextResponse.json({ error: "Game not found." }, { status: 404 });
+
+  const allowed = await canManageGuildOrTournament(session, String(game.guildId));
+  if (!allowed) return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+
+  await games.updateOne({ _id: oid }, { $set: { active: false, updatedAt: new Date() } });
+  await writeAuditLog({ guildId: String(game.guildId), actorId: session.user.discordId || session.user.sub, action: "game.delete", targetType: "Game", targetId: id, details: { name: game.name } });
+  return NextResponse.json({ ok: true });
 }

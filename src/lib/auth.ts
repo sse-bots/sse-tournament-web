@@ -1,114 +1,172 @@
-import { betterAuth } from "better-auth";
-import { mongodbAdapter } from "@better-auth/mongo-adapter";
-import { genericOAuth } from "better-auth/plugins";
-import { nextCookies } from "better-auth/next-js";
-import { getDbSync, getMongoClient } from "./mongo";
+import crypto from "crypto";
+import { cookies } from "next/headers";
+import type { SessionUser } from "./tournament-types";
 
-const nexusBase = (process.env.NEXUS_BASE_URL || "https://sse-nexus.vercel.app").replace(/\/+$/, "");
-const appUrl = (
-  process.env.BETTER_AUTH_URL ||
-  process.env.NEXT_PUBLIC_APP_URL ||
-  "http://localhost:3000"
-).replace(/\/+$/, "");
+export const SESSION_COOKIE = "sse_tourney_session";
+export const OAUTH_STATE_COOKIE = "sse_tourney_oauth_state";
 
-const nexusScopes = (process.env.NEXUS_OAUTH_SCOPES || "openid profile email")
-  .split(/[\s,]+/)
-  .map((s) => s.trim())
-  .filter(Boolean);
-
-function createAuthInstance() {
-  const hasMongo = Boolean(process.env.MONGODB_URI);
-  const database = hasMongo
-    ? mongodbAdapter(getDbSync(), { client: getMongoClient() })
-    : undefined;
-
-  return betterAuth({
-    baseURL: appUrl,
-    secret:
-      process.env.BETTER_AUTH_SECRET ||
-      "dev-only-fallback-secret-replace-in-production-32chars",
-    database,
-    trustedOrigins: [appUrl, nexusBase],
-    user: {
-      additionalFields: {
-        discordId: {
-          type: "string",
-          required: false,
-          defaultValue: "",
-        },
-        nexusRole: {
-          type: "string",
-          required: false,
-          defaultValue: "player",
-        },
-        roleIdsJson: {
-          type: "string",
-          required: false,
-          defaultValue: "[]",
-        },
-      },
-    },
-    plugins: [
-      genericOAuth({
-        config: [
-          {
-            providerId: "sse-nexus",
-            clientId: process.env.NEXUS_OAUTH_CLIENT_ID || "sse-tournament-client",
-            clientSecret: process.env.NEXUS_OAUTH_CLIENT_SECRET || "sse-tournament-secret",
-            discoveryUrl: process.env.NEXUS_OAUTH_DISCOVERY_URL || undefined,
-            authorizationUrl:
-              process.env.NEXUS_OAUTH_AUTHORIZATION_URL ||
-              `${nexusBase}/api/auth/oauth2/authorize`,
-            tokenUrl:
-              process.env.NEXUS_OAUTH_TOKEN_URL ||
-              `${nexusBase}/api/auth/oauth2/token`,
-            userInfoUrl:
-              process.env.NEXUS_OAUTH_USERINFO_URL ||
-              `${nexusBase}/api/auth/oauth2/userinfo`,
-            scopes: nexusScopes,
-            pkce: true,
-            mapProfileToUser: (profile) => {
-              const raw = profile as unknown as Record<string, unknown>;
-              const discordId = String(
-                raw.discordId || raw.discord_id || raw.sub || raw.id || ""
-              );
-              const roleList = Array.isArray(raw.roleIds)
-                ? raw.roleIds.map(String)
-                : Array.isArray(raw.roles)
-                  ? raw.roles.map(String)
-                  : [];
-              const nexusRole = String(raw.role || raw.nexusRole || "player");
-              return {
-                name: String(raw.name || raw.username || raw.global_name || "SSE Competitor"),
-                email: String(raw.email || `${discordId || "player"}@sse-nexus.local`),
-                image: raw.image
-                  ? String(raw.image)
-                  : raw.picture
-                    ? String(raw.picture)
-                    : raw.avatar
-                      ? String(raw.avatar)
-                      : undefined,
-                emailVerified: Boolean(raw.email_verified ?? true),
-                discordId,
-                nexusRole,
-                roleIdsJson: JSON.stringify(roleList),
-              };
-            },
-          },
-        ],
-      }),
-      nextCookies(),
-    ],
-  });
+export interface StoredSession {
+  user: SessionUser;
+  accessToken: string;
+  refreshToken?: string | null;
+  expiresAt: number;
 }
 
-const globalForAuth = globalThis as unknown as {
-  _sseBetterAuth?: ReturnType<typeof createAuthInstance>;
-};
+export interface DiscordGuildRaw {
+  id: string;
+  name: string;
+  icon: string | null;
+  owner: boolean;
+  permissions: string;
+}
 
-export function getAuth() {
-  if (!globalForAuth._sseBetterAuth) {
-    globalForAuth._sseBetterAuth = createAuthInstance();
+function normalizeUrl(raw?: string | null): string {
+  const cleaned = (raw || "").trim().replace(/\/+$/, "");
+  if (!cleaned) return "";
+  return /^https?:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`;
+}
+
+export function getAccountsBaseUrl(): string {
+  return (
+    normalizeUrl(process.env.SSE_ACCOUNTS_URL) ||
+    normalizeUrl(process.env.NEXT_PUBLIC_SSE_ACCOUNTS_URL) ||
+    "https://sse-account.vercel.app"
+  );
+}
+
+export function getAppBaseUrl(): string {
+  return (
+    normalizeUrl(process.env.NEXT_PUBLIC_APP_URL) ||
+    normalizeUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL) ||
+    normalizeUrl(process.env.VERCEL_URL) ||
+    "http://localhost:3000"
+  );
+}
+
+function getSessionSecret(): Buffer {
+  const raw =
+    (process.env.SESSION_SECRET || "").trim() ||
+    (process.env.SSE_OAUTH_CLIENT_SECRET || "").trim() ||
+    "sse-tournament-dev-fallback-secret-change-in-production";
+  return crypto.createHash("sha256").update(raw).digest();
+}
+
+export function encryptCookiePayload(data: unknown): string {
+  const key = getSessionSecret();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const plaintext = Buffer.from(JSON.stringify(data), "utf8");
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, encrypted]).toString("base64url");
+}
+
+export function decryptCookiePayload<T>(token: string): T | null {
+  try {
+    const raw = Buffer.from(token, "base64url");
+    if (raw.length < 29) return null;
+    const iv = raw.subarray(0, 12);
+    const tag = raw.subarray(12, 28);
+    const ciphertext = raw.subarray(28);
+    const key = getSessionSecret();
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ]);
+    return JSON.parse(decrypted.toString("utf8")) as T;
+  } catch {
+    return null;
   }
-  return globalForAuth._sseBetterAuth;
+}
+
+export function createPkcePair() {
+  const verifier = crypto.randomBytes(32).toString("base64url");
+  const challenge = crypto
+    .createHash("sha256")
+    .update(verifier)
+    .digest("base64url");
+  return { verifier, challenge };
+}
+
+export function isGlobalAdminUser(
+  discordId: string | null | undefined,
+  sseRoles: string[],
+  ssePermissions: string[]
+): boolean {
+  const envAdmins = new Set(
+    (process.env.ADMIN_DISCORD_IDS || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean)
+  );
+  if (discordId && envAdmins.has(String(discordId))) return true;
+  if (
+    sseRoles.includes("head") ||
+    sseRoles.includes("admin") ||
+    sseRoles.includes("tournament_manager")
+  ) {
+    return true;
+  }
+  return (
+    ssePermissions.includes("*") ||
+    ssePermissions.includes("tournaments:manage") ||
+    ssePermissions.includes("accounts:admin")
+  );
+}
+
+export async function getSession(): Promise<StoredSession | null> {
+  const jar = await cookies();
+  const raw = jar.get(SESSION_COOKIE)?.value;
+  if (!raw) return null;
+  const session = decryptCookiePayload<StoredSession>(raw);
+  if (!session || !session.user?.sub) return null;
+  if (session.expiresAt && Date.now() > session.expiresAt) return null;
+  return session;
+}
+
+export function hasManageGuildPermission(guild: DiscordGuildRaw): boolean {
+  if (guild.owner) return true;
+  try {
+    const perms = BigInt(guild.permissions || "0");
+    const ADMINISTRATOR = BigInt(0x8);
+    const MANAGE_GUILD = BigInt(0x20);
+    return (perms & ADMINISTRATOR) === ADMINISTRATOR || (perms & MANAGE_GUILD) === MANAGE_GUILD;
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchUserDiscordGuilds(
+  accessToken: string
+): Promise<DiscordGuildRaw[]> {
+  if (!accessToken) return [];
+  const accountsUrl = getAccountsBaseUrl();
+  try {
+    const res = await fetch(`${accountsUrl}/api/sso/discord/guilds`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { guilds?: DiscordGuildRaw[] };
+    return Array.isArray(data.guilds) ? data.guilds : [];
+  } catch {
+    return [];
+  }
+}
+
+export function getCookieSecurityOptions(maxAgeSeconds: number) {
+  const isProd = process.env.NODE_ENV === "production";
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: maxAgeSeconds,
+  };
 }
