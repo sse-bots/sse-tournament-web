@@ -28,6 +28,80 @@ export type TournamentStatus =
 
 export type TeamPowerRule = "average" | "all_members" | "captain";
 
+export type ServerAccessRole = "owner" | "moderator" | "member";
+
+export interface GuildRoleInfo {
+  id: string;
+  name: string;
+  color: string;
+  position: number;
+}
+
+export interface GuildChannelInfo {
+  id: string;
+  name: string;
+  category: string | null;
+}
+
+export interface ServerAccessContext {
+  guildId: string;
+  isMember: boolean;
+  isServerOwner: boolean;
+  isServerModerator: boolean;
+  role: ServerAccessRole;
+  canCreateTournament: boolean;
+  canManageGames: boolean;
+  canManageServerSettings: boolean;
+  canViewStaffTools: boolean;
+}
+
+export interface TournamentAccessContext {
+  guildId: string;
+  tournamentId: string;
+  isServerOwner: boolean;
+  isTournamentOwner: boolean;
+  isModerator: boolean;
+  isFairPlayLocked: boolean;
+  role: ServerAccessRole;
+  canAssignModerators: boolean;
+  canManageTournament: boolean;
+  canDeclareResults: boolean;
+  canDeleteTournament: boolean;
+}
+
+export interface ServerWorkspaceSummary {
+  id: string;
+  name: string;
+  icon: string | null;
+  owner: boolean;
+  role: ServerAccessRole;
+  botConfigured: boolean;
+  botOnline: boolean;
+  botLastSyncAt: string | null;
+  memberCount: number;
+  tournamentCount: number;
+  liveTournamentCount: number;
+  openRegistrationCount: number;
+  gameCount: number;
+  openTicketCount: number;
+}
+
+export interface ServerSettingsData {
+  guildId: string;
+  guildName: string;
+  guildIcon: string | null;
+  ownerId: string | null;
+  botOnline: boolean;
+  botLastSyncAt: string | null;
+  categoryId: string | null;
+  logChannelId: string | null;
+  announcementChannelId: string | null;
+  supportStaffRoleId: string | null;
+  defaultModeratorRoleIds: string[];
+  discordRoles: GuildRoleInfo[];
+  discordChannels: GuildChannelInfo[];
+}
+
 export interface PowerBracket {
   id: string;
   name: string;
@@ -56,6 +130,15 @@ export interface TournamentSummary {
   gameName: string;
   description: string;
   ownerId: string;
+  managerRoleIds: string[];
+  reviewerRoleIds: string[];
+  headManagerRoleIds: string[];
+  awardRoleIds: {
+    first?: string;
+    second?: string;
+    third?: string;
+  };
+  announcementChannelId: string | null;
   status: TournamentStatus;
   format: TournamentFormat;
   mode: TournamentMode;
@@ -109,6 +192,8 @@ export interface TournamentSummary {
 export interface RegistrationRow {
   id: string;
   userId: string;
+  discordUsername: string | null;
+  discordDisplayName: string | null;
   inGameId: string;
   powerValues: number[];
   claimedSquadPower: number | null;
@@ -210,6 +295,7 @@ export interface GameRow {
   name: string;
   active: boolean;
   createdBy: string;
+  tournamentCount?: number;
   createdAt: string | null;
 }
 
@@ -229,15 +315,38 @@ export interface SessionUser {
   isGlobalAdmin: boolean;
 }
 
-export interface ManagedGuild {
+export interface TournamentTemplate {
   id: string;
   name: string;
-  icon: string | null;
-  owner: boolean;
-  canManage: boolean;
-  botConfigured: boolean;
-  tournamentCount: number;
-  gameCount: number;
+  tagline: string;
+  gameHint: string;
+  accent: string;
+  isBlank?: boolean;
+  defaults: {
+    description: string;
+    format: TournamentFormat;
+    mode: TournamentMode;
+    scoring: TournamentScoring;
+    bracketsEnabled: boolean;
+    brackets: Array<{ name: string; minPower: number; maxPower: number | null }>;
+    teamSizeMin: number;
+    teamSizeMax: number;
+    teamPowerRule: TeamPowerRule;
+    seriesBestOf: number;
+    swissRounds: number;
+    maps: string[];
+    matchDeadlineHours: number;
+    matchDurationMinutes: number;
+    proofRequired: boolean;
+    approvalRequired: boolean;
+    allowDraws: boolean;
+    teamInvitesOnly: boolean;
+    prizes: {
+      first: string;
+      second: string;
+      third: string;
+    };
+  };
 }
 
 export const FORMAT_LABELS: Record<TournamentFormat, string> = {
@@ -259,32 +368,32 @@ export const SCORING_LABELS: Record<TournamentScoring, string> = {
 
 export const STATUS_META: Record<
   TournamentStatus,
-  { label: string; color: string; bg: string; pulse?: boolean }
+  { label: string; color: string; lightColor: string; bg: string; pulse?: boolean }
 > = {
-  draft: { label: "Draft", color: "#94a3b8", bg: "rgba(148, 163, 184, 0.16)" },
-  registration: { label: "Registration Open", color: "#34d399", bg: "rgba(16, 185, 129, 0.16)", pulse: true },
-  registration_closed: { label: "Registration Closed", color: "#38bdf8", bg: "rgba(56, 189, 248, 0.16)" },
-  matchmaking: { label: "Matchmaking", color: "#a78bfa", bg: "rgba(139, 92, 246, 0.16)" },
-  in_progress: { label: "Live In Progress", color: "#fbbf24", bg: "rgba(245, 158, 11, 0.18)", pulse: true },
-  paused: { label: "Paused", color: "#fb923c", bg: "rgba(249, 115, 22, 0.16)" },
-  completed: { label: "Completed", color: "#4ade80", bg: "rgba(34, 197, 94, 0.16)" },
-  cancelled: { label: "Cancelled", color: "#fb7185", bg: "rgba(244, 63, 94, 0.16)" },
-  archived: { label: "Archived", color: "#64748b", bg: "rgba(100, 116, 139, 0.16)" },
+  draft: { label: "Draft", color: "#94a3b8", lightColor: "#475569", bg: "rgba(148, 163, 184, 0.16)" },
+  registration: { label: "Registration Open", color: "#34d399", lightColor: "#047857", bg: "rgba(16, 185, 129, 0.16)", pulse: true },
+  registration_closed: { label: "Registration Closed", color: "#38bdf8", lightColor: "#0369a1", bg: "rgba(56, 189, 248, 0.16)" },
+  matchmaking: { label: "Matchmaking", color: "#a78bfa", lightColor: "#6d28d9", bg: "rgba(139, 92, 246, 0.16)" },
+  in_progress: { label: "Live In Progress", color: "#fbbf24", lightColor: "#b45309", bg: "rgba(245, 158, 11, 0.18)", pulse: true },
+  paused: { label: "Paused", color: "#fb923c", lightColor: "#c2410c", bg: "rgba(249, 115, 22, 0.16)" },
+  completed: { label: "Completed", color: "#4ade80", lightColor: "#15803d", bg: "rgba(34, 197, 94, 0.16)" },
+  cancelled: { label: "Cancelled", color: "#fb7185", lightColor: "#be123c", bg: "rgba(244, 63, 94, 0.16)" },
+  archived: { label: "Archived", color: "#94a3b8", lightColor: "#475569", bg: "rgba(100, 116, 139, 0.16)" },
 };
 
 export const MATCH_STATUS_COLORS: Record<
   string,
-  { label: string; color: string; bg: string }
+  { label: string; color: string; lightColor: string; bg: string }
 > = {
-  scheduled: { label: "Scheduled", color: "#94a3b8", bg: "rgba(148,163,184,0.16)" },
-  ready: { label: "Ready", color: "#38bdf8", bg: "rgba(56,189,248,0.16)" },
-  in_progress: { label: "In Progress", color: "#fbbf24", bg: "rgba(245,158,11,0.18)" },
-  pending_proof: { label: "Pending Proof", color: "#fb923c", bg: "rgba(249,115,22,0.16)" },
-  pending_review: { label: "Pending Review", color: "#c084fc", bg: "rgba(168,85,247,0.18)" },
-  approved: { label: "Approved", color: "#34d399", bg: "rgba(16,185,129,0.16)" },
-  rejected: { label: "Rejected", color: "#fb7185", bg: "rgba(244,63,94,0.16)" },
-  disputed: { label: "Disputed", color: "#f43f5e", bg: "rgba(244,63,94,0.22)" },
-  forfeited: { label: "Forfeited", color: "#f59e0b", bg: "rgba(245,158,11,0.16)" },
-  postponed: { label: "Postponed", color: "#94a3b8", bg: "rgba(148,163,184,0.16)" },
-  cancelled: { label: "Cancelled", color: "#64748b", bg: "rgba(100,116,139,0.16)" },
+  scheduled: { label: "Scheduled", color: "#94a3b8", lightColor: "#475569", bg: "rgba(148,163,184,0.16)" },
+  ready: { label: "Ready", color: "#38bdf8", lightColor: "#0369a1", bg: "rgba(56,189,248,0.16)" },
+  in_progress: { label: "In Progress", color: "#fbbf24", lightColor: "#b45309", bg: "rgba(245,158,11,0.18)" },
+  pending_proof: { label: "Pending Proof", color: "#fb923c", lightColor: "#c2410c", bg: "rgba(249,115,22,0.16)" },
+  pending_review: { label: "Pending Review", color: "#c084fc", lightColor: "#7e22ce", bg: "rgba(168,85,247,0.18)" },
+  approved: { label: "Approved", color: "#34d399", lightColor: "#047857", bg: "rgba(16,185,129,0.16)" },
+  rejected: { label: "Rejected", color: "#fb7185", lightColor: "#be123c", bg: "rgba(244,63,94,0.16)" },
+  disputed: { label: "Disputed", color: "#f43f5e", lightColor: "#be123c", bg: "rgba(244,63,94,0.22)" },
+  forfeited: { label: "Forfeited", color: "#f59e0b", lightColor: "#b45309", bg: "rgba(245,158,11,0.16)" },
+  postponed: { label: "Postponed", color: "#94a3b8", lightColor: "#475569", bg: "rgba(148,163,184,0.16)" },
+  cancelled: { label: "Cancelled", color: "#94a3b8", lightColor: "#475569", bg: "rgba(100,116,139,0.16)" },
 };

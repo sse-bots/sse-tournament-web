@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { getCollections, toIso, toObjectId, writeAuditLog } from "@/lib/mongodb";
-import { canManageGuildOrTournament } from "@/lib/tournament-service";
+import { resolveServerAccess } from "@/lib/rbac";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,11 +19,16 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const guildId = (searchParams.get("guildId") || "").trim();
   if (!guildId) return NextResponse.json({ error: "guildId required." }, { status: 400 });
-  if (!(await canManageGuildOrTournament(session, guildId))) return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+
+  const { access } = await resolveServerAccess(session, guildId);
+  if (!access.canViewStaffTools) {
+    return NextResponse.json({ error: "Owner or Moderator access required." }, { status: 403 });
+  }
 
   const { tickets } = await getCollections();
-  const docs = await tickets.find({ guildId }).sort({ createdAt: -1 }).limit(50).toArray();
+  const docs = await tickets.find({ guildId }).sort({ createdAt: -1 }).limit(60).toArray();
   return NextResponse.json({
+    access,
     tickets: docs.map((tk) => ({
       id: String(tk._id),
       guildId: String(tk.guildId || ""),
@@ -54,7 +59,9 @@ export async function PATCH(req: Request) {
   const { tickets } = await getCollections();
   const ticket = await tickets.findOne({ _id: oid });
   if (!ticket) return NextResponse.json({ error: "Ticket not found." }, { status: 404 });
-  if (!(await canManageGuildOrTournament(session, String(ticket.guildId)))) return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+
+  const { access } = await resolveServerAccess(session, String(ticket.guildId));
+  if (!access.canViewStaffTools) return NextResponse.json({ error: "Forbidden." }, { status: 403 });
 
   const actorId = session.user.discordId || session.user.sub;
   const now = new Date();

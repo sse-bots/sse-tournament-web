@@ -2,10 +2,19 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { getCollections, toObjectId, writeAuditLog } from "@/lib/mongodb";
-import { canManageGuildOrTournament } from "@/lib/tournament-service";
+import { resolveTournamentAccess } from "@/lib/rbac";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const createMatchSchema = z.object({
+  sideAId: z.string().trim().min(1),
+  sideBId: z.string().trim().min(1),
+  mapName: z.string().trim().max(80).optional().default(""),
+  bracketId: z.string().trim().optional().nullable(),
+  roundNumber: z.number().int().min(1).max(30).optional().default(1),
+  scheduledAt: z.string().trim().optional().nullable(),
+});
 
 const matchActionSchema = z.object({
   matchId: z.string().min(1),
@@ -16,6 +25,127 @@ const matchActionSchema = z.object({
   scheduledAt: z.string().trim().optional(),
   note: z.string().trim().max(240).optional().default(""),
 });
+
+export async function POST(
+  req: Request,
+  context: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+
+  const { id } = await context.params;
+  const tid = toObjectId(id);
+  if (!tid) return NextResponse.json({ error: "Invalid tournament ID." }, { status: 400 });
+
+  const { tournaments, matches, registrations, teams } = await getCollections();
+  const t = await tournaments.findOne({ _id: tid });
+  if (!t) return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
+
+  const { access } = await resolveTournamentAccess(session, t);
+  if (!access.canManageTournament) {
+    return NextResponse.json({ error: "Moderator or Owner permission required." }, { status: 403 });
+  }
+
+  if (!["registration_closed", "matchmaking", "in_progress"].includes(String(t.status))) {
+    return NextResponse.json({ error: "Close registration before creating manual matches." }, { status: 400 });
+  }
+
+  const body = await req.json().catch(() => null);
+  const parsed = createMatchSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid custom match payload." }, { status: 400 });
+  }
+
+  const d = parsed.data;
+  if (d.sideAId === d.sideBId) {
+    return NextResponse.json({ error: "Side A and Side B must be different entrants." }, { status: 400 });
+  }
+
+  let sideAUserIds: string[] = [];
+  let sideBUserIds: string[] = [];
+  let sideATeamId = null;
+  let sideBTeamId = null;
+
+  if (t.mode === "team") {
+    const [tmA, tmB] = await Promise.all([
+      teams.findOne({ _id: toObjectId(d.sideAId) || undefined, tournamentId: tid, status: "active" }),
+      teams.findOne({ _id: toObjectId(d.sideBId) || undefined, tournamentId: tid, status: "active" }),
+    ]);
+    if (!tmA || !tmB) {
+      return NextResponse.json({ error: "Both selected teams must be active in this tournament." }, { status: 400 });
+    }
+    sideAUserIds = Array.isArray(tmA.memberIds) ? tmA.memberIds.map(String) : [];
+    sideBUserIds = Array.isArray(tmB.memberIds) ? tmB.memberIds.map(String) : [];
+    sideATeamId = tmA._id;
+    sideBTeamId = tmB._id;
+  } else {
+    const [regA, regB] = await Promise.all([
+      registrations.findOne({ tournamentId: tid, userId: d.sideAId, status: "registered" }),
+      registrations.findOne({ tournamentId: tid, userId: d.sideBId, status: "registered" }),
+    ]);
+    if (!regA || !regB) {
+      return NextResponse.json({ error: "Both players must be registered in this tournament." }, { status: 400 });
+    }
+    sideAUserIds = [String(regA.userId)];
+    sideBUserIds = [String(regB.userId)];
+  }
+
+  const lastDoc = await matches
+    .find({ tournamentId: tid })
+    .sort({ matchNumber: -1 })
+    .limit(1)
+    .next();
+  const nextNumber = Number(lastDoc?.matchNumber ?? 0) + 1;
+
+  const maps = Array.isArray(t.maps) && t.maps.length > 0 ? t.maps.map(String) : ["To be announced"];
+  const mapName = d.mapName || maps[(nextNumber - 1) % maps.length];
+
+  let bracketObjId = null;
+  if (d.bracketId && Array.isArray(t.brackets)) {
+    const foundB = t.brackets.find((b: { _id: unknown }) => String(b._id) === d.bracketId);
+    if (foundB) bracketObjId = foundB._id;
+  }
+
+  const now = new Date();
+  const doc: Record<string, unknown> = {
+    guildId: String(t.guildId),
+    tournamentId: tid,
+    matchNumber: nextNumber,
+    bracketId: bracketObjId,
+    sideAUserIds,
+    sideBUserIds,
+    sideATeamId,
+    sideBTeamId,
+    sideAPower: 0,
+    sideBPower: 0,
+    mapName,
+    format: String(t.format),
+    roundNumber: d.roundNumber,
+    status: "scheduled",
+    createdAt: now,
+  };
+
+  if (d.scheduledAt) {
+    const dt = new Date(d.scheduledAt);
+    if (!Number.isNaN(dt.getTime())) {
+      doc.scheduledAt = dt;
+      const deadlineHrs = Number(((t.schedule || {}) as Record<string, unknown>).matchDeadlineHours ?? 48);
+      doc.deadlineAt = new Date(dt.getTime() + deadlineHrs * 3600_000);
+    }
+  }
+
+  const inserted = await matches.insertOne(doc);
+  await writeAuditLog({
+    guildId: String(t.guildId),
+    actorId: session.user.discordId || session.user.sub,
+    action: "match.web_create",
+    targetType: "Match",
+    targetId: String(inserted.insertedId),
+    details: { matchNumber: nextNumber, mapName },
+  });
+
+  return NextResponse.json({ ok: true, id: String(inserted.insertedId), matchNumber: nextNumber }, { status: 201 });
+}
 
 export async function PATCH(req: Request, context: { params: Promise<{ id: string }> }) {
   const session = await getSession();
@@ -32,8 +162,17 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
   const { tournaments, matches, registrations } = await getCollections();
   const t = await tournaments.findOne({ _id: tid });
   if (!t) return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
-  if (!(await canManageGuildOrTournament(session, String(t.guildId), String(t.ownerId || "")))) {
-    return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+
+  const { access } = await resolveTournamentAccess(session, t);
+  if (!access.canManageTournament) {
+    return NextResponse.json(
+      {
+        error: access.isFairPlayLocked
+          ? "Fair-Play Guard: registered participants cannot review matches in this tournament."
+          : "Moderator or Owner permission required.",
+      },
+      { status: 403 }
+    );
   }
 
   const mid = toObjectId(parsed.data.matchId);
@@ -45,6 +184,10 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
   const now = new Date();
   const sideAIds = Array.isArray(m.sideAUserIds) ? m.sideAUserIds.map(String) : [];
   const sideBIds = Array.isArray(m.sideBUserIds) ? m.sideBUserIds.map(String) : [];
+
+  if (session.user.discordId && [...sideAIds, ...sideBIds].includes(String(session.user.discordId))) {
+    return NextResponse.json({ error: "You cannot review your own match." }, { status: 403 });
+  }
 
   async function applyScore(side: "A" | "B" | "DRAW", delta: 1 | -1) {
     if (side === "DRAW") {

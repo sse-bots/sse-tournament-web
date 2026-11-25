@@ -154,7 +154,7 @@ export async function GET(req: Request) {
   const target =
     saved.nextPath && saved.nextPath.startsWith("/")
       ? saved.nextPath
-      : "/dashboard";
+      : "/servers";
 
   const res = NextResponse.redirect(new URL(target, appBase));
   res.cookies.delete(OAUTH_STATE_COOKIE);

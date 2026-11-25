@@ -1,10 +1,5 @@
 import type { Document, ObjectId } from "mongodb";
 import { getCollections, toIso } from "./mongodb";
-import {
-  fetchUserDiscordGuilds,
-  hasManageGuildPermission,
-  type StoredSession,
-} from "./auth";
 import type {
   AuditLogRow,
   FinalStandingRow,
@@ -51,24 +46,6 @@ export function bracketsOverlap(
   const aHi = aMax === null ? Number.POSITIVE_INFINITY : aMax;
   const bHi = bMax === null ? Number.POSITIVE_INFINITY : bMax;
   return aMin <= bHi && bMin <= aHi;
-}
-
-export async function canManageGuildOrTournament(
-  session: StoredSession | null,
-  guildId: string,
-  ownerId?: string | null
-): Promise<boolean> {
-  if (!session) return false;
-  if (session.user.isGlobalAdmin) return true;
-  if (ownerId && session.user.discordId && String(ownerId) === String(session.user.discordId)) {
-    return true;
-  }
-  if (ownerId && String(ownerId) === String(session.user.sub)) {
-    return true;
-  }
-  const guilds = await fetchUserDiscordGuilds(session.accessToken);
-  const match = guilds.find((g) => String(g.id) === String(guildId));
-  return Boolean(match && hasManageGuildPermission(match));
 }
 
 export function mapBrackets(raw: unknown): PowerBracket[] {
@@ -131,6 +108,7 @@ export async function hydrateTournamentSummary(
   const schedule = (doc.schedule || {}) as Record<string, unknown>;
   const policy = (doc.resultPolicy || {}) as Record<string, unknown>;
   const prizes = (doc.prizeDescriptions || {}) as Record<string, unknown>;
+  const awards = (doc.awardRoleIds || {}) as Record<string, unknown>;
 
   return {
     id: String(tid),
@@ -140,6 +118,24 @@ export async function hydrateTournamentSummary(
     gameName,
     description: String(doc.description || ""),
     ownerId: String(doc.ownerId || ""),
+    managerRoleIds: Array.isArray(doc.managerRoleIds)
+      ? doc.managerRoleIds.map(String)
+      : [],
+    reviewerRoleIds: Array.isArray(doc.reviewerRoleIds)
+      ? doc.reviewerRoleIds.map(String)
+      : [],
+    headManagerRoleIds: Array.isArray(doc.headManagerRoleIds)
+      ? doc.headManagerRoleIds.map(String)
+      : [],
+    awardRoleIds: {
+      first: typeof awards.first === "string" ? awards.first : undefined,
+      second: typeof awards.second === "string" ? awards.second : undefined,
+      third: typeof awards.third === "string" ? awards.third : undefined,
+    },
+    announcementChannelId:
+      typeof doc.announcementChannelId === "string" && doc.announcementChannelId
+        ? doc.announcementChannelId
+        : null,
     status: (doc.status || "draft") as TournamentStatus,
     format: (doc.format || "single_elimination") as TournamentFormat,
     mode: (doc.mode || "individual") as TournamentMode,
@@ -203,7 +199,8 @@ export async function hydrateTournamentSummary(
 
 export async function getFullTournamentDetail(
   tournamentDoc: Document,
-  includeManagerData = false
+  includeStaffData = false,
+  viewerDiscordId?: string | null
 ) {
   const { registrations, teams, matches, tickets, auditLogs, seriesRecords } =
     await getCollections();
@@ -226,17 +223,20 @@ export async function getFullTournamentDetail(
       .sort({ roundNumber: 1, matchNumber: 1 })
       .toArray(),
     seriesRecords.find({ tournamentId: tid }).toArray(),
-    includeManagerData
+    includeStaffData
       ? tickets.find({ tournamentId: tid }).sort({ createdAt: -1 }).limit(50).toArray()
       : Promise.resolve([]),
-    includeManagerData
+    includeStaffData
       ? auditLogs
           .find({
             guildId: String(tournamentDoc.guildId),
-            $or: [{ targetId: String(tid) }, { targetType: { $in: ["Match", "Registration", "Team"] } }],
+            $or: [
+              { targetId: String(tid) },
+              { targetType: { $in: ["Match", "Registration", "Team", "Ticket"] } },
+            ],
           })
           .sort({ createdAt: -1 })
-          .limit(60)
+          .limit(80)
           .toArray()
       : Promise.resolve([]),
   ]);
@@ -269,7 +269,11 @@ export async function getFullTournamentDetail(
     return {
       id: String(r._id),
       userId: String(r.userId),
-      inGameId: String(r.inGameId || ""),
+      discordUsername:
+        typeof r.discordUsername === "string" ? r.discordUsername : null,
+      discordDisplayName:
+        typeof r.discordDisplayName === "string" ? r.discordDisplayName : null,
+      inGameId: String(r.inGameId || r.discordDisplayName || ""),
       powerValues: Array.isArray(r.powerValues) ? r.powerValues.map(Number) : [],
       claimedSquadPower:
         typeof r.claimedSquadPower === "number" ? r.claimedSquadPower : null,
@@ -419,7 +423,8 @@ export async function getFullTournamentDetail(
     return userIds
       .map((uid) => {
         const reg = regByUser.get(uid);
-        return reg?.inGameId ? `${reg.inGameId} (${uid.slice(-4)})` : `Player #${uid.slice(-4)}`;
+        const label = reg?.inGameId || reg?.discordDisplayName || reg?.discordUsername;
+        return label ? `${label} (${uid.slice(-4)})` : `Player #${uid.slice(-4)}`;
       })
       .join(", ");
   };
@@ -496,6 +501,10 @@ export async function getFullTournamentDetail(
     createdAt: toIso(a.createdAt),
   }));
 
+  const myRegistration = viewerDiscordId
+    ? mappedRegs.find((r) => r.userId === String(viewerDiscordId)) || null
+    : null;
+
   return {
     tournament: summary,
     registrations: mappedRegs,
@@ -503,5 +512,6 @@ export async function getFullTournamentDetail(
     matches: mappedMatches,
     tickets: mappedTickets,
     auditLogs: mappedAudits,
+    myRegistration,
   };
 }

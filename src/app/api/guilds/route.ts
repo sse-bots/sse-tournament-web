@@ -5,7 +5,7 @@ import {
   hasManageGuildPermission,
 } from "@/lib/auth";
 import { getCollections } from "@/lib/mongodb";
-import type { ManagedGuild } from "@/lib/tournament-types";
+interface ManagedGuild { id: string; name: string; icon: string | null; owner: boolean; canManage: boolean; botConfigured: boolean; tournamentCount: number; gameCount: number; }
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

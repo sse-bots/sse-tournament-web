@@ -72,7 +72,7 @@ export default function BotDocsPage() {
           <a href={SITE_SETTINGS.links.nexusUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-500">
             <Sparkles className="h-3.5 w-3.5" /> Get Activation Key in SSE Nexus
           </a>
-          <Link href="/dashboard" className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:border-indigo-500">
+          <Link href="/servers" className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:border-indigo-500">
             <Trophy className="h-3.5 w-3.5 text-amber-400" /> Open Web Control Dashboard
           </Link>
         </div>
