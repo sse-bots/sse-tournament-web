@@ -3,6 +3,7 @@ import { getCollections, toIso } from "./mongodb";
 import type {
   AuditLogRow,
   FinalStandingRow,
+  MatchForumTag,
   MatchRow,
   PowerBracket,
   RegistrationRow,
@@ -14,6 +15,8 @@ import type {
   TournamentScoring,
   TournamentStatus,
   TournamentSummary,
+  TournamentWeekInfo,
+  WebSyncStatus,
 } from "./tournament-types";
 
 export function findBracketForPower(
@@ -67,6 +70,55 @@ export function mapBrackets(raw: unknown): PowerBracket[] {
         (a.displayOrder ?? 999) - (b.displayOrder ?? 999) ||
         a.minPower - b.minPower
     );
+}
+
+export function mapWeeks(raw: unknown): TournamentWeekInfo[] {
+  if (!Array.isArray(raw)) return [];
+  return (raw as Document[])
+    .map((w) => ({
+      weekNumber: Number(w.weekNumber ?? 1),
+      status: (w.status === "closed" ? "closed" : "open") as "open" | "closed",
+      forumChannelId: w.forumChannelId ? String(w.forumChannelId) : null,
+      forumUrl: typeof w.forumUrl === "string" ? w.forumUrl : null,
+      announcementThreadId: w.announcementThreadId
+        ? String(w.announcementThreadId)
+        : null,
+      announcementThreadUrl:
+        typeof w.announcementThreadUrl === "string"
+          ? w.announcementThreadUrl
+          : null,
+      isForum: Boolean(w.isForum !== false),
+      createdAt: toIso(w.createdAt),
+      closedAt: toIso(w.closedAt),
+    }))
+    .sort((a, b) => a.weekNumber - b.weekNumber);
+}
+
+export function mapWebSyncStatus(raw: unknown): WebSyncStatus | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (!obj.action && !obj.message) return null;
+  return {
+    action: String(obj.action || ""),
+    ok: Boolean(obj.ok),
+    message: String(obj.message || ""),
+    at: toIso(obj.at),
+  };
+}
+
+export function inferForumTag(status: string, explicitTag?: unknown): MatchForumTag {
+  if (
+    explicitTag === "pending" ||
+    explicitTag === "submitted" ||
+    explicitTag === "issue" ||
+    explicitTag === "declared"
+  ) {
+    return explicitTag;
+  }
+  if (["approved", "forfeited"].includes(status)) return "declared";
+  if (status === "pending_review") return "submitted";
+  if (["disputed", "rejected"].includes(status)) return "issue";
+  return "pending";
 }
 
 export async function hydrateTournamentSummary(
@@ -142,6 +194,8 @@ export async function hydrateTournamentSummary(
     scoring: (doc.scoring || "wins") as TournamentScoring,
     bracketsEnabled: Boolean(doc.bracketsEnabled),
     brackets: mapBrackets(doc.brackets),
+    weeks: mapWeeks(doc.weeks),
+    lastWebSync: mapWebSyncStatus(doc.lastWebSync),
     teamSizeMin: Number(doc.teamSizeMin ?? 1),
     teamSizeMax: Number(doc.teamSizeMax ?? 1),
     teamPowerRule: (doc.teamPowerRule || "average") as TeamPowerRule,
@@ -205,6 +259,7 @@ export async function getFullTournamentDetail(
   const { registrations, teams, matches, tickets, auditLogs, seriesRecords } =
     await getCollections();
   const tid = tournamentDoc._id as ObjectId;
+  const viewerIdStr = viewerDiscordId ? String(viewerDiscordId) : null;
 
   const [
     summary,
@@ -220,7 +275,7 @@ export async function getFullTournamentDetail(
     teams.find({ tournamentId: tid }).sort({ name: 1 }).toArray(),
     matches
       .find({ tournamentId: tid })
-      .sort({ roundNumber: 1, matchNumber: 1 })
+      .sort({ weekNumber: 1, roundNumber: 1, matchNumber: 1 })
       .toArray(),
     seriesRecords.find({ tournamentId: tid }).toArray(),
     includeStaffData
@@ -266,6 +321,11 @@ export async function getFullTournamentDetail(
     const played = wins + losses;
     const bId = r.bracketId ? String(r.bracketId) : null;
     const tId = r.teamId ? String(r.teamId) : null;
+    const isSelf = Boolean(viewerIdStr && String(r.userId) === viewerIdStr);
+
+    // Privacy guard: normal members only see their own Squad Power screenshot proof, never other players' proofs.
+    const canSeeProof = includeStaffData || isSelf;
+
     return {
       id: String(r._id),
       userId: String(r.userId),
@@ -274,13 +334,15 @@ export async function getFullTournamentDetail(
       discordDisplayName:
         typeof r.discordDisplayName === "string" ? r.discordDisplayName : null,
       inGameId: String(r.inGameId || r.discordDisplayName || ""),
-      powerValues: Array.isArray(r.powerValues) ? r.powerValues.map(Number) : [],
+      powerValues: canSeeProof && Array.isArray(r.powerValues) ? r.powerValues.map(Number) : [],
       claimedSquadPower:
         typeof r.claimedSquadPower === "number" ? r.claimedSquadPower : null,
       verifiedSquadPower:
         typeof r.verifiedSquadPower === "number" ? r.verifiedSquadPower : null,
       squadPowerProofUrl:
-        typeof r.squadPowerProofUrl === "string" ? r.squadPowerProofUrl : null,
+        canSeeProof && typeof r.squadPowerProofUrl === "string"
+          ? r.squadPowerProofUrl
+          : null,
       squadPowerStatus: String(r.squadPowerStatus || "pending"),
       bracketId: bId,
       bracketName: bId ? bracketNameMap.get(bId) || null : null,
@@ -416,18 +478,24 @@ export async function getFullTournamentDetail(
   const formatSideLabel = (
     userIds: string[],
     teamId: string | null,
-    isByeSide: boolean
+    isByeSide: boolean,
+    storedLabel?: unknown
   ) => {
+    if (typeof storedLabel === "string" && storedLabel.trim() && !storedLabel.startsWith("Side ")) {
+      return storedLabel.trim();
+    }
     if (teamId && teamNameMap.has(teamId)) return teamNameMap.get(teamId)!;
     if (userIds.length === 0) return isByeSide ? "BYE" : "TBD";
     return userIds
       .map((uid) => {
         const reg = regByUser.get(uid);
         const label = reg?.inGameId || reg?.discordDisplayName || reg?.discordUsername;
-        return label ? `${label} (${uid.slice(-4)})` : `Player #${uid.slice(-4)}`;
+        return label ? String(label) : `Player #${uid.slice(-4)}`;
       })
       .join(", ");
   };
+
+  const guildIdStr = String(tournamentDoc.guildId || "");
 
   const mappedMatches: MatchRow[] = matchDocs.map((m) => {
     const sideAIds = Array.isArray(m.sideAUserIds) ? m.sideAUserIds.map(String) : [];
@@ -435,10 +503,43 @@ export async function getFullTournamentDetail(
     const sideATeam = m.sideATeamId ? String(m.sideATeamId) : null;
     const sideBTeam = m.sideBTeamId ? String(m.sideBTeamId) : null;
     const bId = m.bracketId ? String(m.bracketId) : null;
+    const status = String(m.status || "scheduled");
+    const isMyMatch = Boolean(
+      viewerIdStr && (sideAIds.includes(viewerIdStr) || sideBIds.includes(viewerIdStr))
+    );
+    const canSeeMatchProof = includeStaffData || isMyMatch;
+
+    const sideALabel = formatSideLabel(sideAIds, sideATeam, false, m.sideALabel);
+    const sideBLabel = formatSideLabel(sideBIds, sideBTeam, Boolean(m.isBye), m.sideBLabel);
+    const winnerSide =
+      m.reportedWinnerSide === "A" ||
+      m.reportedWinnerSide === "B" ||
+      m.reportedWinnerSide === "DRAW"
+        ? m.reportedWinnerSide
+        : null;
+    const reportedWinnerLabel =
+      typeof m.reportedWinnerLabel === "string" && m.reportedWinnerLabel.trim()
+        ? m.reportedWinnerLabel.trim()
+        : winnerSide === "A"
+          ? sideALabel
+          : winnerSide === "B"
+            ? sideBLabel
+            : winnerSide === "DRAW"
+              ? "Draw"
+              : null;
+
+    const threadId = m.threadId ? String(m.threadId) : m.channelId ? String(m.channelId) : null;
+    const threadUrl =
+      typeof m.threadUrl === "string" && m.threadUrl
+        ? m.threadUrl
+        : threadId && guildIdStr
+          ? `https://discord.com/channels/${guildIdStr}/${threadId}`
+          : null;
 
     return {
       id: String(m._id),
       matchNumber: Number(m.matchNumber ?? 0),
+      weekNumber: Number(m.weekNumber ?? m.roundNumber ?? 1),
       roundNumber: Number(m.roundNumber ?? 1),
       bracketId: bId,
       bracketName: bId ? bracketNameMap.get(bId) || null : null,
@@ -446,23 +547,29 @@ export async function getFullTournamentDetail(
       sideBUserIds: sideBIds,
       sideATeamId: sideATeam,
       sideBTeamId: sideBTeam,
-      sideALabel: formatSideLabel(sideAIds, sideATeam, false),
-      sideBLabel: formatSideLabel(sideBIds, sideBTeam, Boolean(m.isBye)),
+      sideALabel,
+      sideBLabel,
       sideAPower: Number(m.sideAPower ?? 0),
       sideBPower: Number(m.sideBPower ?? 0),
       mapName: String(m.mapName || "To be announced"),
       format: String(m.format || summary.format),
-      status: String(m.status || "scheduled"),
-      channelId: m.channelId ? String(m.channelId) : null,
+      status,
+      forumTag: inferForumTag(status, m.forumTag),
+      forumChannelId: m.forumChannelId ? String(m.forumChannelId) : null,
+      threadId,
+      threadUrl,
+      channelId: m.channelId ? String(m.channelId) : threadId,
+      channelCreationError: Boolean(m.channelCreationError),
+      channelCreationErrorMsg:
+        typeof m.channelCreationErrorMsg === "string"
+          ? m.channelCreationErrorMsg
+          : null,
       scheduledAt: toIso(m.scheduledAt),
       deadlineAt: toIso(m.deadlineAt),
-      proofUrl: typeof m.proofUrl === "string" ? m.proofUrl : null,
-      reportedWinnerSide:
-        m.reportedWinnerSide === "A" ||
-        m.reportedWinnerSide === "B" ||
-        m.reportedWinnerSide === "DRAW"
-          ? m.reportedWinnerSide
-          : null,
+      proofUrl:
+        canSeeMatchProof && typeof m.proofUrl === "string" ? m.proofUrl : null,
+      reportedWinnerSide: winnerSide,
+      reportedWinnerLabel,
       submittedBy: m.submittedBy ? String(m.submittedBy) : null,
       reviewedBy: m.reviewedBy ? String(m.reviewedBy) : null,
       reviewNote: typeof m.reviewNote === "string" ? m.reviewNote : null,
@@ -501,15 +608,25 @@ export async function getFullTournamentDetail(
     createdAt: toIso(a.createdAt),
   }));
 
-  const myRegistration = viewerDiscordId
-    ? mappedRegs.find((r) => r.userId === String(viewerDiscordId)) || null
+  const myRegistration = viewerIdStr
+    ? mappedRegs.find((r) => r.userId === viewerIdStr) || null
     : null;
+
+  const myMatches = viewerIdStr
+    ? mappedMatches.filter(
+        (m) =>
+          m.sideAUserIds.includes(viewerIdStr) ||
+          m.sideBUserIds.includes(viewerIdStr)
+      )
+    : [];
 
   return {
     tournament: summary,
     registrations: mappedRegs,
     teams: mappedTeams,
-    matches: mappedMatches,
+    // Members receive only their own matches via `matches` if not staff, preventing exposure of manager bracket/proof details
+    matches: includeStaffData ? mappedMatches : myMatches,
+    myMatches,
     tickets: mappedTickets,
     auditLogs: mappedAudits,
     myRegistration,

@@ -12,6 +12,7 @@ import Link from "next/link";
 import {
   AlertTriangle,
   CheckCircle2,
+  Crown,
   Download,
   Gamepad2,
   Lock,
@@ -20,8 +21,8 @@ import {
   RefreshCw,
   ShieldAlert,
   Swords,
-  Trophy,
   Unlock,
+  X,
 } from "lucide-react";
 import { FairPlayBadge, RoleBadge } from "@/components/RoleBadge";
 import { useWorkspace } from "@/components/WorkspaceContext";
@@ -45,6 +46,7 @@ export interface FullTournamentPayload {
   registrations: RegistrationRow[];
   teams: TeamRow[];
   matches: MatchRow[];
+  myMatches: MatchRow[];
   tickets: SupportTicketRow[];
   auditLogs: AuditLogRow[];
   myRegistration: RegistrationRow | null;
@@ -64,6 +66,7 @@ interface TournamentDetailContextValue {
   showToast: (msg: string) => void;
   setError: (msg: string | null) => void;
   refresh: () => Promise<void>;
+  openCloseTournamentModal: () => void;
   runAction: (
     body: Record<string, unknown>,
     successMsg?: string
@@ -89,9 +92,15 @@ export function TournamentDetailProvider({
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
+  // Close Tournament Modal state
+  const [closeModalOpen, setCloseModalOpen] = useState(false);
+  const [closeDeclareWinners, setCloseDeclareWinners] = useState(true);
+  const [closeForce, setCloseForce] = useState(false);
+  const [closeReason, setCloseReason] = useState("");
+
   const showToast = useCallback((msg: string) => {
     setToast(msg);
-    window.setTimeout(() => setToast(null), 4500);
+    window.setTimeout(() => setToast(null), 5000);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -143,8 +152,8 @@ export function TournamentDetailProvider({
           return { ok: false, json: j };
         }
         await Promise.all([refresh(), refreshTournament(), refreshServer()]);
-        if (successMsg) showToast(successMsg);
-        else if (typeof j.message === "string") showToast(j.message);
+        if (typeof j.message === "string" && j.message) showToast(j.message);
+        else if (successMsg) showToast(successMsg);
         return { ok: true, json: j };
       } catch {
         setError("Network error while executing action.");
@@ -156,9 +165,47 @@ export function TournamentDetailProvider({
     [tournamentId, refresh, refreshTournament, refreshServer, showToast]
   );
 
+  const openCloseTournamentModal = useCallback(() => {
+    setCloseDeclareWinners(true);
+    setCloseForce(false);
+    setCloseReason("");
+    setCloseModalOpen(true);
+  }, []);
+
   const t = data?.tournament;
   const access = data?.access;
   const st = t ? STATUS_META[t.status] || STATUS_META.draft : null;
+  const isStaff = Boolean(
+    access?.canManageTournament || access?.canAssignModerators
+  );
+  const unresolvedCount = (data?.matches || []).filter((m) =>
+    [
+      "scheduled",
+      "ready",
+      "in_progress",
+      "pending_review",
+      "rejected",
+      "disputed",
+      "postponed",
+    ].includes(m.status)
+  ).length;
+  const nextWeekNum =
+    Math.max(0, ...(t?.weeks || []).map((w) => w.weekNumber)) + 1;
+
+  async function handleConfirmCloseTournament() {
+    const res = await runAction(
+      {
+        action: "close_tournament",
+        declareResults: closeDeclareWinners,
+        force: closeForce,
+        reason: closeReason.trim() || undefined,
+      },
+      "Tournament closed! Bot is locking all week forums in Discord."
+    );
+    if (res.ok) {
+      setCloseModalOpen(false);
+    }
+  }
 
   return (
     <TournamentDetailContext.Provider
@@ -173,6 +220,7 @@ export function TournamentDetailProvider({
         showToast,
         setError,
         refresh,
+        openCloseTournamentModal,
         runAction,
       }}
     >
@@ -258,9 +306,11 @@ export function TournamentDetailProvider({
                   <span className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-0.5 font-semibold">
                     {SCORING_LABELS[t.scoring]}
                   </span>
-                  <code className="font-mono text-[10px] text-slate-400">
-                    ID: {t.id}
-                  </code>
+                  {t.weeks.length > 0 && (
+                    <span className="rounded-lg border border-indigo-500/35 bg-indigo-500/15 px-2 py-0.5 font-bold text-indigo-300">
+                      {t.weeks.length} Week{t.weeks.length === 1 ? "" : "s"}
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -272,17 +322,21 @@ export function TournamentDetailProvider({
                   onClick={refresh}
                   className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-2 text-xs font-bold text-slate-200 transition hover:border-indigo-500 disabled:opacity-50"
                 >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  Sync
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${busy || loading ? "animate-spin" : ""}`}
+                  />
+                  {busy || loading ? "Syncing..." : "Sync"}
                 </button>
 
-                <a
-                  href={`/api/tournaments/${encodeURIComponent(t.id)}/export`}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-2 text-xs font-bold text-slate-200 transition hover:border-indigo-500"
-                >
-                  <Download className="h-3.5 w-3.5 text-emerald-400" />
-                  CSV
-                </a>
+                {isStaff && (
+                  <a
+                    href={`/api/tournaments/${encodeURIComponent(t.id)}/export`}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-2 text-xs font-bold text-slate-200 transition hover:border-indigo-500"
+                  >
+                    <Download className="h-3.5 w-3.5 text-emerald-400" />
+                    CSV
+                  </a>
+                )}
 
                 {access.canManageTournament && t.status === "draft" && (
                   <button
@@ -319,49 +373,41 @@ export function TournamentDetailProvider({
                 )}
 
                 {access.canManageTournament &&
-                  t.status === "registration_closed" &&
-                  t.counts.matches === 0 &&
+                  ["registration_closed", "matchmaking", "in_progress"].includes(
+                    t.status
+                  ) &&
                   t.format !== "custom" && (
                     <button
                       type="button"
                       disabled={busy}
                       onClick={() =>
-                        runAction(
-                          { action: "trigger_matchmaking" },
-                          "Matchmaking queued! SSE Bot will generate matches & private rooms in ~15s."
-                        )
+                        runAction({
+                          action: "trigger_matchmaking",
+                          weekNumber: nextWeekNum,
+                        })
                       }
                       className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-extrabold text-white shadow-md transition hover:bg-indigo-500 disabled:opacity-50"
                     >
                       <Swords className="h-3.5 w-3.5" />
-                      Generate Matchmaking
+                      Generate Week {nextWeekNum}
                     </button>
                   )}
 
                 {access.canManageTournament && t.status === "in_progress" && (
-                  <>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() =>
-                        runAction(
-                          { action: "pause" },
-                          "Tournament paused — submissions suspended."
-                        )
-                      }
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-3 py-2 text-xs font-extrabold text-white transition hover:bg-amber-500 disabled:opacity-50"
-                    >
-                      <Pause className="h-3.5 w-3.5" />
-                      Pause
-                    </button>
-                    <Link
-                      href={`/servers/${guildId}/tournaments/${t.id}/standings`}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-extrabold text-white shadow-md transition hover:bg-emerald-500"
-                    >
-                      <Trophy className="h-3.5 w-3.5" />
-                      Declare Results
-                    </Link>
-                  </>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      runAction(
+                        { action: "pause" },
+                        "Tournament paused — submissions suspended."
+                      )
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-3 py-2 text-xs font-extrabold text-white transition hover:bg-amber-500 disabled:opacity-50"
+                  >
+                    <Pause className="h-3.5 w-3.5" />
+                    Pause
+                  </button>
                 )}
 
                 {access.canManageTournament && t.status === "paused" && (
@@ -377,6 +423,19 @@ export function TournamentDetailProvider({
                     Resume
                   </button>
                 )}
+
+                {access.canManageTournament &&
+                  !["completed", "cancelled", "archived"].includes(t.status) && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={openCloseTournamentModal}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/15 px-3.5 py-2 text-xs font-extrabold text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
+                    >
+                      <Lock className="h-3.5 w-3.5" />
+                      Close Tournament
+                    </button>
+                  )}
               </div>
             </div>
           </section>
@@ -399,6 +458,37 @@ export function TournamentDetailProvider({
             </div>
           )}
 
+          {/* Live Bot WebSync Feedback Banner (Staff Only) */}
+          {isStaff && t.lastWebSync && (
+            <div
+              className={`flex flex-wrap items-center justify-between gap-2 rounded-2xl border px-4 py-2.5 text-[11px] font-semibold ${
+                t.lastWebSync.ok
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                  : "border-rose-500/40 bg-rose-500/10 text-rose-300"
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                {t.lastWebSync.ok ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                )}
+                <span>
+                  Bot Sync ({t.lastWebSync.action}): {t.lastWebSync.message}
+                </span>
+              </span>
+              {t.lastWebSync.at && (
+                <span className="text-[10px] opacity-80">
+                  {new Date(t.lastWebSync.at).toLocaleTimeString("en-IN", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  })}
+                </span>
+              )}
+            </div>
+          )}
+
           {toast && (
             <div className="flex items-center gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-3.5 text-xs font-semibold text-emerald-300">
               <CheckCircle2 className="h-4 w-4 shrink-0" />
@@ -412,6 +502,133 @@ export function TournamentDetailProvider({
           )}
 
           {children}
+
+          {/* Close Tournament Modal */}
+          {closeModalOpen && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+              onClick={() => setCloseModalOpen(false)}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-lg space-y-4 rounded-3xl border border-slate-700 bg-[#0b1120] p-6 shadow-2xl"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="inline-flex items-center gap-1.5 rounded-full bg-rose-500/15 px-2.5 py-0.5 text-[10px] font-extrabold text-rose-300">
+                      <Lock className="h-3 w-3" /> Close Tournament
+                    </div>
+                    <h2 className="mt-2 text-lg font-black text-white">
+                      Close {t.name}
+                    </h2>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Closing locks all open Week Forums and match posts in
+                      Discord so no further messages or submissions can be sent.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCloseModalOpen(false)}
+                    className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => setCloseDeclareWinners(true)}
+                    className={`rounded-2xl border p-3.5 text-left transition ${
+                      closeDeclareWinners
+                        ? "border-emerald-500 bg-emerald-500/15"
+                        : "border-slate-800 bg-slate-950/70"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-white">
+                      <Crown className="h-4 w-4 text-amber-400" />
+                      Close &amp; Declare Winners
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      Freeze podium standings, announce Top 3 in Discord, grant
+                      award roles, and lock all week forums.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setCloseDeclareWinners(false)}
+                    className={`rounded-2xl border p-3.5 text-left transition ${
+                      !closeDeclareWinners
+                        ? "border-indigo-500 bg-indigo-500/15"
+                        : "border-slate-800 bg-slate-950/70"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-white">
+                      <Lock className="h-4 w-4 text-indigo-400" />
+                      Close Forums Only
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      Mark tournament completed and lock all week forums without
+                      triggering a podium award announcement.
+                    </p>
+                  </button>
+                </div>
+
+                {closeDeclareWinners && unresolvedCount > 0 && (
+                  <div className="space-y-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-3.5 text-xs text-amber-200">
+                    <div className="font-bold text-amber-300">
+                      {unresolvedCount} unresolved match(es) remaining
+                    </div>
+                    <label className="flex cursor-pointer items-center gap-2 font-bold text-white">
+                      <input
+                        type="checkbox"
+                        checked={closeForce}
+                        onChange={(e) => setCloseForce(e.target.checked)}
+                        className="h-4 w-4 accent-indigo-500"
+                      />
+                      Force close and freeze standings anyway
+                    </label>
+                  </div>
+                )}
+
+                <div>
+                  <label className="mb-1 block text-xs font-bold text-slate-200">
+                    Closing Note (Optional)
+                  </label>
+                  <input
+                    value={closeReason}
+                    onChange={(e) => setCloseReason(e.target.value)}
+                    placeholder="e.g. Great season everyone! See you in Season 2."
+                    className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setCloseModalOpen(false)}
+                    className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      busy ||
+                      (closeDeclareWinners &&
+                        unresolvedCount > 0 &&
+                        !closeForce)
+                    }
+                    onClick={handleConfirmCloseTournament}
+                    className="rounded-xl bg-rose-600 px-5 py-2 text-xs font-extrabold text-white hover:bg-rose-500 disabled:opacity-50"
+                  >
+                    {busy ? "Closing..." : "Confirm Close Tournament"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </TournamentDetailContext.Provider>

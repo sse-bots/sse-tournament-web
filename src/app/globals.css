@@ -694,3 +694,22 @@ html.light .sse-status-pill {
 html.light .sse-status-dot {
   background-color: var(--pill-light);
 }
+
+/* ==========================================================================
+   10. Global Sync Progress Bar Animation
+   ========================================================================== */
+@keyframes sseSyncSweep {
+  0% {
+    transform: translateX(-110%);
+  }
+  50% {
+    transform: translateX(95%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+.sse-sync-bar {
+  animation: sseSyncSweep 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}

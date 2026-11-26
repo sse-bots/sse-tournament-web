@@ -3,6 +3,7 @@ import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { getCollections, toObjectId, writeAuditLog } from "@/lib/mongodb";
+import { generateWeekMatches } from "@/lib/matchmaking-service";
 import {
   extractGuildChannels,
   extractGuildRoles,
@@ -25,6 +26,9 @@ const patchSchema = z.object({
       "close_registration",
       "reopen_registration",
       "trigger_matchmaking",
+      "close_week",
+      "reopen_week",
+      "close_tournament",
       "send_announcement",
       "start",
       "pause",
@@ -70,6 +74,10 @@ const patchSchema = z.object({
     .optional(),
   announcementChannelId: z.string().trim().optional().nullable(),
   announcementMessage: z.string().trim().min(2).max(3800).optional(),
+  weekNumber: z.number().int().min(1).max(52).optional(),
+  broadcastToMatches: z.boolean().optional(),
+  alsoPostServerChannel: z.boolean().optional(),
+  declareResults: z.boolean().optional(),
   reason: z.string().trim().max(240).optional(),
   force: z.boolean().optional(),
   bracket: z
@@ -110,8 +118,8 @@ export async function GET(
       ...detail,
       access,
       canManage: access.canManageTournament,
-      discordRoles: extractGuildRoles(guildCfg),
-      discordChannels: extractGuildChannels(guildCfg),
+      discordRoles: showStaff ? extractGuildRoles(guildCfg) : [],
+      discordChannels: showStaff ? extractGuildChannels(guildCfg) : [],
     },
     { headers: { "Cache-Control": "no-store" } }
   );
@@ -128,7 +136,7 @@ export async function PATCH(
   const oid = toObjectId(id);
   if (!oid) return NextResponse.json({ error: "Invalid tournament ID." }, { status: 400 });
 
-  const { tournaments, matches } = await getCollections();
+  const { tournaments, matches, guildConfig } = await getCollections();
   const t = await tournaments.findOne({ _id: oid });
   if (!t) return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
 
@@ -218,36 +226,194 @@ export async function PATCH(
     return NextResponse.json({ ok: true });
   }
 
+  // Immediate Multi-Week Matchmaking Generation!
   if (d.action === "trigger_matchmaking") {
-    if (!["registration_closed", "matchmaking"].includes(String(t.status))) {
-      return NextResponse.json({ error: "Close registration first before generating matchmaking." }, { status: 400 });
+    const res = await generateWeekMatches(t, actorId, d.weekNumber);
+    if (!res.ok) {
+      return NextResponse.json({ error: res.error }, { status: res.status });
     }
-    if (t.format === "custom") {
-      return NextResponse.json({ error: "Custom format uses manual match creation instead of auto-matchmaking." }, { status: 400 });
+    return NextResponse.json(res);
+  }
+
+  // Close Week (locks all match posts in that week's Discord Forum!)
+  if (d.action === "close_week") {
+    const wk = d.weekNumber || 1;
+    const weeks = Array.isArray(t.weeks) ? (t.weeks as Array<Record<string, unknown>>) : [];
+    const hasWeek = weeks.some((w) => Number(w.weekNumber) === wk);
+    if (hasWeek) {
+      await tournaments.updateOne(
+        { _id: oid, "weeks.weekNumber": wk },
+        { $set: { "weeks.$.status": "closed", "weeks.$.closedAt": now, updatedAt: now } }
+      );
+    } else {
+      await tournaments.updateOne(
+        { _id: oid },
+        {
+          $push: { weeks: { weekNumber: wk, status: "closed", closedAt: now, createdAt: now } } as never,
+          $set: { updatedAt: now },
+        }
+      );
     }
-    if ((await matches.countDocuments({ tournamentId: oid })) > 0) {
-      return NextResponse.json({ error: "Matches already exist for this tournament." }, { status: 400 });
-    }
-    await tournaments.updateOne({ _id: oid }, { $set: { status: "matchmaking", updatedAt: now } });
     await writeAuditLog({
       guildId: String(t.guildId),
       actorId,
-      action: "matchmaking.web_generate",
+      action: "week.close",
       targetType: "Tournament",
       targetId: id,
-      details: { format: t.format },
+      details: { weekNumber: wk, reason: d.reason || "" },
     });
     return NextResponse.json({
       ok: true,
-      queued: true,
-      message: "Matchmaking queued! SSE Tournament Bot will generate matches & private channels within ~15 seconds.",
+      message: `Week ${wk} closed! Bot will lock all Week ${wk} match posts in Discord (~15s).`,
     });
   }
 
+  // Reopen Week
+  if (d.action === "reopen_week") {
+    const wk = d.weekNumber || 1;
+    await tournaments.updateOne(
+      { _id: oid, "weeks.weekNumber": wk },
+      { $set: { "weeks.$.status": "open", "weeks.$.reopenedAt": now, updatedAt: now } }
+    );
+    await writeAuditLog({
+      guildId: String(t.guildId),
+      actorId,
+      action: "week.reopen",
+      targetType: "Tournament",
+      targetId: id,
+      details: { weekNumber: wk },
+    });
+    return NextResponse.json({
+      ok: true,
+      message: `Week ${wk} reopened! Active match posts will be unlocked in Discord.`,
+    });
+  }
+
+  // Close Tournament (optionally declares final standings OR simply closes & locks all weeks)
+  if (d.action === "close_tournament") {
+    if (["completed", "cancelled", "archived"].includes(String(t.status))) {
+      return NextResponse.json({ error: "Tournament is already closed." }, { status: 400 });
+    }
+    const weeks = Array.isArray(t.weeks) ? (t.weeks as Array<Record<string, unknown>>) : [];
+    const closedWeeks = weeks.map((w) => ({
+      ...w,
+      status: "closed",
+      closedAt: w.closedAt || now,
+    }));
+
+    if (d.declareResults) {
+      const pending = await matches.countDocuments({
+        tournamentId: oid,
+        status: { $in: ["scheduled", "ready", "in_progress", "pending_review", "rejected", "disputed", "postponed"] },
+      });
+      if (pending > 0 && !d.force) {
+        return NextResponse.json(
+          { error: `There are ${pending} unresolved match(es). Enable Force Close to declare standings anyway.` },
+          { status: 400 }
+        );
+      }
+      const detail = await getFullTournamentDetail(t, true);
+      const finalStandings: Array<Record<string, unknown>> = [];
+      const bracketGroups = detail.tournament.bracketsEnabled
+        ? detail.tournament.brackets.map((b) => ({ name: b.name, id: b.id }))
+        : [{ name: "Overall", id: null as string | null }];
+      for (const bg of bracketGroups) {
+        if (detail.tournament.mode === "individual") {
+          detail.registrations
+            .filter((r) => r.status === "registered" && (bg.id === null || r.bracketId === bg.id))
+            .slice(0, 3)
+            .forEach((row, idx) => {
+              finalStandings.push({ bracket: bg.name, place: idx + 1, userId: row.userId, wins: row.wins, losses: row.losses, points: row.points, power: row.verifiedSquadPower });
+            });
+        } else {
+          detail.teams
+            .filter((tm) => tm.status === "active" && (bg.id === null || tm.bracketId === bg.id))
+            .slice(0, 3)
+            .forEach((row, idx) => {
+              finalStandings.push({ bracket: bg.name, place: idx + 1, teamId: row.id, teamName: row.name, wins: row.wins, losses: row.losses, points: row.points });
+            });
+        }
+      }
+      await tournaments.updateOne(
+        { _id: oid },
+        {
+          $set: {
+            status: "completed",
+            completedAt: now,
+            standingsFrozen: true,
+            finishedWithUnresolvedMatches: pending > 0,
+            finalStandings,
+            finalStandingsFrozenAt: now,
+            finalAnnouncementSent: false,
+            weeks: closedWeeks,
+            updatedAt: now,
+          },
+        }
+      );
+      await writeAuditLog({
+        guildId: String(t.guildId),
+        actorId,
+        action: "tournament.finish",
+        targetType: "Tournament",
+        targetId: id,
+        details: { force: Boolean(d.force), pending, placements: finalStandings.length, reason: d.reason || "" },
+      });
+      return NextResponse.json({
+        ok: true,
+        message: "Tournament closed & winners declared! Bot will announce podiums and lock all week forums (~15s).",
+      });
+    }
+
+    await tournaments.updateOne(
+      { _id: oid },
+      {
+        $set: {
+          status: "completed",
+          completedAt: now,
+          closedReason: d.reason || "",
+          weeks: closedWeeks,
+          updatedAt: now,
+        },
+      }
+    );
+    await writeAuditLog({
+      guildId: String(t.guildId),
+      actorId,
+      action: "tournament.close",
+      targetType: "Tournament",
+      targetId: id,
+      details: { reason: d.reason || "" },
+    });
+    return NextResponse.json({
+      ok: true,
+      message: "Tournament closed! Bot will lock all week forums & post closure notice in Discord (~15s).",
+    });
+  }
+
+  // Send Announcement (Server channel, Locked Week Announcement post, and/or Broadcast to All Week Match Posts)
   if (d.action === "send_announcement") {
     if (!d.announcementMessage) {
       return NextResponse.json({ error: "Enter an announcement message." }, { status: 400 });
     }
+    const gcfg = await guildConfig.findOne({ guildId: String(t.guildId) });
+    const channelsObj = (gcfg?.channels || {}) as Record<string, string>;
+    const resolvedChannel =
+      d.announcementChannelId ||
+      (typeof t.announcementChannelId === "string" ? t.announcementChannelId : null) ||
+      (typeof gcfg?.announcementChannelId === "string" ? gcfg.announcementChannelId : null) ||
+      channelsObj.announcements ||
+      null;
+
+    if (!d.weekNumber && !resolvedChannel) {
+      return NextResponse.json(
+        {
+          error:
+            "No Discord announcement channel is configured yet. Select a channel in the dropdown or configure one in Server Settings.",
+        },
+        { status: 400 }
+      );
+    }
+
     await writeAuditLog({
       guildId: String(t.guildId),
       actorId,
@@ -256,10 +422,18 @@ export async function PATCH(
       targetId: id,
       details: {
         message: d.announcementMessage,
-        channelId: d.announcementChannelId || t.announcementChannelId || null,
+        channelId: resolvedChannel,
+        weekNumber: d.weekNumber || null,
+        broadcastToMatches: Boolean(d.broadcastToMatches),
+        alsoPostServerChannel: Boolean(d.alsoPostServerChannel),
       },
     });
-    return NextResponse.json({ ok: true, message: "Announcement queued to Discord!" });
+    return NextResponse.json({
+      ok: true,
+      message: d.weekNumber
+        ? `Week ${d.weekNumber} announcement queued! Bot will post to the locked Week ${d.weekNumber} Announcement post${d.broadcastToMatches ? " and all match posts in that week" : ""} (~15s).`
+        : "Announcement queued to Discord! Delivery status will update automatically within ~15 seconds.",
+    });
   }
 
   if (d.action === "start") {
@@ -299,7 +473,7 @@ export async function PATCH(
     if (pending > 0 && !d.force) {
       return NextResponse.json({ error: `There are ${pending} unresolved match(es). Resolve them or enable Force Declare.` }, { status: 400 });
     }
-    const detail = await getFullTournamentDetail(t, false);
+    const detail = await getFullTournamentDetail(t, true);
     const finalStandings: Array<Record<string, unknown>> = [];
     const bracketGroups = detail.tournament.bracketsEnabled
       ? detail.tournament.brackets.map((b) => ({ name: b.name, id: b.id }))
@@ -323,6 +497,14 @@ export async function PATCH(
       }
     }
 
+    const weeks = Array.isArray(t.weeks)
+      ? (t.weeks as Array<Record<string, unknown>>).map((w) => ({
+          ...w,
+          status: "closed",
+          closedAt: w.closedAt || now,
+        }))
+      : [];
+
     await tournaments.updateOne(
       { _id: oid },
       {
@@ -334,6 +516,7 @@ export async function PATCH(
           finalStandings,
           finalStandingsFrozenAt: now,
           finalAnnouncementSent: false,
+          weeks,
           updatedAt: now,
         },
       }

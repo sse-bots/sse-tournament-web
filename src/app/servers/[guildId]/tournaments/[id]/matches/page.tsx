@@ -2,38 +2,55 @@
 
 import type { CSSProperties } from "react";
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
   Calendar,
   CheckCircle2,
   Edit3,
+  ExternalLink,
   Flag,
   Image as ImageIcon,
   LayoutGrid,
   List,
+  Lock,
   MapPin,
+  Megaphone,
+  MessageSquare,
   Plus,
+  Send,
   ShieldAlert,
   Swords,
+  Unlock,
   X,
   XCircle,
 } from "lucide-react";
 import { BracketBoard } from "@/components/BracketBoard";
 import { useTournamentDetail } from "@/components/TournamentDetailContext";
-import { MATCH_STATUS_COLORS, type MatchRow } from "@/lib/tournament-types";
+import {
+  FORUM_TAG_META,
+  type MatchForumTag,
+  type MatchRow,
+} from "@/lib/tournament-types";
 
-type ViewMode = "board" | "list";
-type MatchFilter = "all" | "needs_review" | "active" | "completed" | "disputed";
+type ViewMode = "list" | "board";
+type MatchFilter = "all" | "submitted" | "pending" | "issue" | "declared";
 
 export default function TournamentMatchesPage() {
   const { data, busy, refresh, runAction, showToast, setError } =
     useTournamentDetail();
 
-  const [view, setView] = useState<ViewMode>("board");
+  const [view, setView] = useState<ViewMode>("list");
   const [filter, setFilter] = useState<MatchFilter>("all");
-  const [roundFilter, setRoundFilter] = useState<string>("all");
+  const [weekFilter, setWeekFilter] = useState<string>("all");
   const [matchBusyId, setMatchBusyId] = useState<string | null>(null);
   const [proofPreview, setProofPreview] = useState<MatchRow | null>(null);
+
+  // Week Announcement modal
+  const [weekAnnounceNum, setWeekAnnounceNum] = useState<number | null>(null);
+  const [weekAnnounceMsg, setWeekAnnounceMsg] = useState("");
+  const [weekBroadcastAll, setWeekBroadcastAll] = useState(true);
+  const [weekAlsoServer, setWeekAlsoServer] = useState(false);
 
   // Create custom match modal
   const [createOpen, setCreateOpen] = useState(false);
@@ -41,11 +58,12 @@ export default function TournamentMatchesPage() {
   const [sideBId, setSideBId] = useState("");
   const [newMap, setNewMap] = useState("");
   const [newBracketId, setNewBracketId] = useState("");
+  const [newWeek, setNewWeek] = useState(1);
   const [newRound, setNewRound] = useState(1);
   const [newSchedule, setNewSchedule] = useState("");
   const [creatingMatch, setCreatingMatch] = useState(false);
 
-  // Review / Forfeit / Override / Edit modal
+  // Match Action Modal (Forfeit / Override / Reject / Dispute / Edit)
   const [actionModal, setActionModal] = useState<{
     match: MatchRow;
     mode: "forfeit" | "override" | "edit" | "reject" | "dispute";
@@ -69,44 +87,62 @@ export default function TournamentMatchesPage() {
     [data?.teams]
   );
 
-  const rounds = useMemo(() => {
-    const set = new Set<number>(matches.map((m) => m.roundNumber || 1));
-    return Array.from(set).sort((a, b) => a - b);
-  }, [matches]);
+  const weekNumbers = useMemo(() => {
+    const s = new Set<number>();
+    for (const w of t?.weeks || []) s.add(w.weekNumber);
+    for (const m of matches) s.add(m.weekNumber || 1);
+    return Array.from(s).sort((a, b) => a - b);
+  }, [t?.weeks, matches]);
 
   const filteredMatches = useMemo(() => {
     return matches.filter((m) => {
-      if (roundFilter !== "all" && String(m.roundNumber) !== roundFilter) {
+      if (weekFilter !== "all" && String(m.weekNumber || 1) !== weekFilter) {
         return false;
       }
-      if (filter === "needs_review") {
-        return ["pending_review", "disputed"].includes(m.status);
-      }
-      if (filter === "active") {
-        return [
-          "scheduled",
-          "ready",
-          "in_progress",
-          "pending_proof",
-          "postponed",
-        ].includes(m.status);
-      }
-      if (filter === "completed") {
-        return ["approved", "forfeited", "cancelled"].includes(m.status);
-      }
-      if (filter === "disputed") {
-        return m.status === "disputed";
+      if (filter !== "all" && m.forumTag !== filter) {
+        return false;
       }
       return true;
     });
-  }, [matches, filter, roundFilter]);
+  }, [matches, filter, weekFilter]);
 
   if (!data || !t || !access) return null;
 
+  const isStaff = access.canManageTournament || access.canAssignModerators;
+  if (!isStaff) {
+    return (
+      <div className="mx-auto max-w-md rounded-3xl border border-amber-500/40 bg-slate-900/75 p-8 text-center">
+        <Lock className="mx-auto mb-3 h-9 w-9 text-amber-400" />
+        <h2 className="text-base font-extrabold text-white">
+          Staff Only — Matches &amp; Weeks Operations
+        </h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-slate-400">
+          This section is restricted to the Server Owner and assigned Tournament
+          Moderators. View your own matches, Discord forum post links, and live
+          standings in My Match &amp; Info.
+        </p>
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
+          <Link
+            href={`/servers/${t.guildId}/tournaments/${t.id}`}
+            className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-500"
+          >
+            My Match &amp; Info
+          </Link>
+          <Link
+            href={`/servers/${t.guildId}/tournaments/${t.id}/standings`}
+            className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200 hover:border-indigo-500"
+          >
+            Standings &amp; Results
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   const canManage = access.canManageTournament;
-  const needsReviewCount = matches.filter((m) =>
-    ["pending_review", "disputed"].includes(m.status)
-  ).length;
+  const submittedCount = matches.filter((m) => m.forumTag === "submitted").length;
+  const issueCount = matches.filter((m) => m.forumTag === "issue").length;
+  const nextWeekNum = (weekNumbers.length > 0 ? Math.max(...weekNumbers) : 0) + 1;
 
   async function patchMatch(
     matchId: string,
@@ -155,6 +191,7 @@ export default function TournamentMatchesPage() {
             sideBId,
             mapName: newMap.trim(),
             bracketId: newBracketId || null,
+            weekNumber: newWeek,
             roundNumber: newRound,
             scheduledAt: newSchedule ? new Date(newSchedule).toISOString() : null,
           }),
@@ -171,7 +208,7 @@ export default function TournamentMatchesPage() {
       setNewMap("");
       setNewSchedule("");
       showToast(
-        `Match #${j.matchNumber} created! SSE Bot will spin up its private Discord room shortly.`
+        `Match #${j.matchNumber} added to Week ${j.weekNumber}! Bot will create the forum post (~15s).`
       );
       await refresh();
     } finally {
@@ -179,12 +216,236 @@ export default function TournamentMatchesPage() {
     }
   }
 
+  async function handleSendWeekAnnouncement(e: React.FormEvent) {
+    e.preventDefault();
+    if (!weekAnnounceNum || !weekAnnounceMsg.trim()) return;
+    const res = await runAction({
+      action: "send_announcement",
+      weekNumber: weekAnnounceNum,
+      announcementMessage: weekAnnounceMsg.trim(),
+      broadcastToMatches: weekBroadcastAll,
+      alsoPostServerChannel: weekAlsoServer,
+    });
+    if (res.ok) {
+      setWeekAnnounceNum(null);
+      setWeekAnnounceMsg("");
+    }
+  }
+
   return (
     <div className="space-y-5">
-      {/* Toolbar */}
+      {/* WEEKS & DISCORD FORUM CONTROL PANEL */}
+      <section className="space-y-4 rounded-3xl border border-slate-800 bg-slate-900/70 p-5">
+        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+          <div>
+            <h2 className="flex items-center gap-2 text-base font-extrabold text-white">
+              <MessageSquare className="h-4 w-4 text-indigo-400" />
+              Weeks &amp; Discord Forum Channels
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-400">
+              Each matchmaking run creates a dedicated Discord Forum (Week 1,
+              Week 2...) with a locked Announcements post and tagged match posts
+              (Pending → Submitted → Results Declared).
+            </p>
+          </div>
+
+          {canManage && (
+            <div className="flex flex-wrap items-center gap-2">
+              {["registration_closed", "matchmaking", "in_progress"].includes(
+                t.status
+              ) &&
+                t.format !== "custom" && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      runAction({
+                        action: "trigger_matchmaking",
+                        weekNumber: nextWeekNum,
+                      })
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-extrabold text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    <Swords className="h-3.5 w-3.5" />
+                    Generate Week {nextWeekNum} Matchmaking
+                  </button>
+                )}
+
+              {["registration_closed", "matchmaking", "in_progress"].includes(
+                t.status
+              ) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewWeek(Math.max(1, ...weekNumbers));
+                    setCreateOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-extrabold text-white shadow-md hover:bg-indigo-500"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Create Custom Match
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {t.weeks.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/60 p-5 text-center text-xs text-slate-400">
+            No Week Forums yet. Close registration, approve at least 2 players&apos;
+            Squad Power, and click{" "}
+            <strong className="text-white">Generate Week 1 Matchmaking</strong>.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {t.weeks.map((wk) => {
+              const wkMatches = matches.filter(
+                (m) => (m.weekNumber || 1) === wk.weekNumber
+              );
+              const declaredInWk = wkMatches.filter(
+                (m) => m.forumTag === "declared"
+              ).length;
+              const isClosed = wk.status === "closed";
+
+              return (
+                <div
+                  key={wk.weekNumber}
+                  className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/75 p-4"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-black text-white">
+                          Week {wk.weekNumber}
+                        </span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase ${
+                            isClosed
+                              ? "bg-slate-800 text-slate-400"
+                              : "bg-emerald-500/15 text-emerald-300"
+                          }`}
+                        >
+                          {isClosed ? "Closed & Locked" : "Open"}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-slate-400">
+                        <strong className="text-white">{wkMatches.length}</strong>{" "}
+                        matches ·{" "}
+                        <strong className="text-emerald-400">
+                          {declaredInWk}
+                        </strong>{" "}
+                        declared
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {wk.forumUrl && (
+                        <a
+                          href={wk.forumUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-white hover:border-indigo-500"
+                        >
+                          Forum <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                      {wk.announcementThreadUrl && (
+                        <a
+                          href={wk.announcementThreadUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 rounded-lg border border-amber-500/35 bg-amber-500/10 px-2.5 py-1 text-[11px] font-bold text-amber-300"
+                        >
+                          Locked Post <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+
+                  {canManage && (
+                    <div className="flex flex-wrap items-center gap-2 border-t border-slate-800/80 pt-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWeekAnnounceNum(wk.weekNumber);
+                          setWeekAnnounceMsg("");
+                          setWeekBroadcastAll(true);
+                          setWeekAlsoServer(false);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-xl border border-indigo-500/40 bg-indigo-500/15 px-3 py-1.5 text-[11px] font-bold text-indigo-300 hover:bg-indigo-500/20"
+                      >
+                        <Megaphone className="h-3.5 w-3.5" />
+                        Announce to Week {wk.weekNumber}
+                      </button>
+
+                      {!isClosed ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => {
+                            if (
+                              !confirm(
+                                `Close Week ${wk.weekNumber} and lock all match forum posts in Week ${wk.weekNumber}?`
+                              )
+                            ) {
+                              return;
+                            }
+                            runAction({
+                              action: "close_week",
+                              weekNumber: wk.weekNumber,
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-1.5 text-[11px] font-bold text-rose-300 disabled:opacity-50"
+                        >
+                          <Lock className="h-3.5 w-3.5" />
+                          Close Week
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() =>
+                            runAction({
+                              action: "reopen_week",
+                              weekNumber: wk.weekNumber,
+                            })
+                          }
+                          className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:border-emerald-500 disabled:opacity-50"
+                        >
+                          <Unlock className="h-3.5 w-3.5 text-emerald-400" />
+                          Reopen Week
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* VIEW SWITCH & FILTERS */}
       <div className="flex flex-col justify-between gap-3 rounded-3xl border border-slate-800 bg-slate-900/70 p-4 sm:flex-row sm:items-center">
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex rounded-xl border border-slate-800 bg-slate-950 p-1">
+            <button
+              type="button"
+              onClick={() => setView("list")}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                view === "list"
+                  ? "bg-indigo-600 text-white"
+                  : "text-slate-300 hover:text-white"
+              }`}
+            >
+              <List className="h-3.5 w-3.5" />
+              Match Operations
+              {submittedCount + issueCount > 0 && (
+                <span className="rounded-full bg-rose-500/25 px-1.5 py-0.5 text-[10px] font-extrabold text-rose-300">
+                  {submittedCount + issueCount}
+                </span>
+              )}
+            </button>
             <button
               type="button"
               onClick={() => setView("board")}
@@ -197,117 +458,34 @@ export default function TournamentMatchesPage() {
               <LayoutGrid className="h-3.5 w-3.5" />
               Bracket Board
             </button>
-            <button
-              type="button"
-              onClick={() => setView("list")}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                view === "list"
-                  ? "bg-indigo-600 text-white"
-                  : "text-slate-300 hover:text-white"
-              }`}
-            >
-              <List className="h-3.5 w-3.5" />
-              Match List
-              {needsReviewCount > 0 && canManage && (
-                <span className="rounded-full bg-rose-500/25 px-1.5 py-0.5 text-[10px] font-extrabold text-rose-300">
-                  {needsReviewCount}
-                </span>
-              )}
-            </button>
           </div>
 
-          {view === "list" && (
+          {weekNumbers.length > 0 && (
             <select
-              value={roundFilter}
-              onChange={(e) => setRoundFilter(e.target.value)}
+              value={weekFilter}
+              onChange={(e) => setWeekFilter(e.target.value)}
               className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
             >
-              <option value="all">All Rounds</option>
-              {rounds.map((r) => (
-                <option key={r} value={String(r)}>
-                  Round {r}
+              <option value="all">All Weeks ({weekNumbers.length})</option>
+              {weekNumbers.map((w) => (
+                <option key={w} value={String(w)}>
+                  Week {w}
                 </option>
               ))}
             </select>
           )}
         </div>
 
-        {/* Staff Controls */}
-        {canManage && (
-          <div className="flex flex-wrap items-center gap-2">
-            {["registration_closed", "matchmaking"].includes(t.status) &&
-              t.format !== "custom" &&
-              matches.length === 0 && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() =>
-                    runAction(
-                      { action: "trigger_matchmaking" },
-                      "Matchmaking queued! Bot will create pairings & private rooms within ~15 seconds."
-                    )
-                  }
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-extrabold text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
-                >
-                  <Swords className="h-3.5 w-3.5" />
-                  Generate Matchmaking
-                </button>
-              )}
-
-            {["registration_closed", "matchmaking", "in_progress"].includes(
-              t.status
-            ) && (
-              <button
-                type="button"
-                onClick={() => setCreateOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-extrabold text-white shadow-md hover:bg-indigo-500"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Create Match
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Pending Review Queue Banner for Staff */}
-      {canManage && needsReviewCount > 0 && view === "board" && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-            <span>
-              <strong className="text-white">{needsReviewCount}</strong>{" "}
-              match(es) have submitted proof or an active dispute awaiting
-              moderator review.
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              setView("list");
-              setFilter("needs_review");
-            }}
-            className="rounded-xl bg-amber-600 px-3 py-1.5 text-[11px] font-extrabold text-white hover:bg-amber-500"
-          >
-            Review Now
-          </button>
-        </div>
-      )}
-
-      {/* Visual Bracket View */}
-      {view === "board" ? (
-        <BracketBoard matches={matches} brackets={t.brackets} />
-      ) : (
-        <div className="space-y-4">
-          {/* Status Filter Pills */}
+        {/* Forum Tag Filter Pills */}
+        {view === "list" && (
           <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto">
             {(
               [
                 { id: "all", label: `All (${matches.length})` },
-                { id: "needs_review", label: `Needs Review (${needsReviewCount})` },
-                { id: "active", label: "Active / Scheduled" },
-                { id: "completed", label: "Completed" },
-                { id: "disputed", label: "Disputed" },
+                { id: "submitted", label: `Submitted (${submittedCount})` },
+                { id: "issue", label: `Issue (${issueCount})` },
+                { id: "pending", label: "Pending" },
+                { id: "declared", label: "Results Declared" },
               ] as Array<{ id: MatchFilter; label: string }>
             ).map((pill) => (
               <button
@@ -317,245 +495,363 @@ export default function TournamentMatchesPage() {
                 className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition ${
                   filter === pill.id
                     ? "bg-indigo-600 text-white"
-                    : "border border-slate-800 bg-slate-900 text-slate-300 hover:border-indigo-500/50"
+                    : "border border-slate-800 bg-slate-950 text-slate-300 hover:border-indigo-500/50"
                 }`}
               >
                 {pill.label}
               </button>
             ))}
           </div>
+        )}
+      </div>
 
-          {filteredMatches.length === 0 ? (
-            <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-10 text-center text-xs text-slate-400">
-              No matches in this filter.
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {filteredMatches.map((m) => {
-                const st =
-                  MATCH_STATUS_COLORS[m.status] || MATCH_STATUS_COLORS.scheduled;
-                const isBusy = matchBusyId === m.id;
-                const canReview =
-                  canManage && ["pending_review", "disputed"].includes(m.status);
-                const isFinal = ["approved", "forfeited", "cancelled"].includes(
-                  m.status
-                );
+      {/* BOARD OR OPERATIONS LIST */}
+      {view === "board" ? (
+        <BracketBoard matches={filteredMatches} brackets={t.brackets} />
+      ) : filteredMatches.length === 0 ? (
+        <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-10 text-center text-xs text-slate-400">
+          No matches in this filter.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filteredMatches.map((m) => {
+            const tagKey = (m.forumTag || "pending") as MatchForumTag;
+            const tagMeta = FORUM_TAG_META[tagKey] || FORUM_TAG_META.pending;
+            const isBusy = matchBusyId === m.id;
+            const canReview =
+              canManage && ["pending_review", "disputed"].includes(m.status);
+            const isFinal = ["approved", "forfeited", "cancelled"].includes(
+              m.status
+            );
+            const reportedName =
+              m.reportedWinnerLabel ||
+              (m.reportedWinnerSide === "A"
+                ? m.sideALabel
+                : m.reportedWinnerSide === "B"
+                  ? m.sideBLabel
+                  : m.reportedWinnerSide === "DRAW"
+                    ? "Draw"
+                    : null);
 
-                return (
-                  <div
-                    key={m.id}
-                    className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4 sm:p-5"
-                  >
-                    <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
-                      <div className="min-w-0 flex-1 space-y-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-mono text-xs font-extrabold text-indigo-400">
-                            Match #{String(m.matchNumber).padStart(3, "0")}
-                          </span>
-                          <span className="rounded-lg bg-slate-800 px-2 py-0.5 text-[10px] font-bold text-slate-300">
-                            Round {m.roundNumber}
-                          </span>
-                          {m.bracketName && (
-                            <span className="rounded-lg bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
-                              {m.bracketName}
-                            </span>
-                          )}
-                          {m.seriesIndex && m.seriesBestOf && (
-                            <span className="rounded-lg bg-indigo-500/15 px-2 py-0.5 text-[10px] font-bold text-indigo-300">
-                              Game {m.seriesIndex} / Bo{m.seriesBestOf}
-                            </span>
-                          )}
-                          <span
-                            className="sse-status-pill rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase"
-                            style={
-                              {
-                                backgroundColor: st.bg,
-                                "--pill-dark": st.color,
-                                "--pill-light": st.lightColor,
-                              } as CSSProperties
-                            }
-                          >
-                            {st.label}
-                          </span>
-                        </div>
+            return (
+              <div
+                key={m.id}
+                className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4 sm:p-5"
+              >
+                <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-md bg-indigo-500/20 px-2 py-0.5 text-[10px] font-extrabold text-indigo-300">
+                        Week {m.weekNumber || 1}
+                      </span>
+                      <span className="font-mono text-xs font-extrabold text-white">
+                        Match #{m.matchNumber}
+                      </span>
+                      {m.bracketName && (
+                        <span className="rounded-lg bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+                          {m.bracketName}
+                        </span>
+                      )}
+                      {m.seriesIndex && m.seriesBestOf && (
+                        <span className="rounded-lg bg-slate-800 px-2 py-0.5 text-[10px] font-bold text-slate-300">
+                          Game {m.seriesIndex} / Bo{m.seriesBestOf}
+                        </span>
+                      )}
+                      <span
+                        className="sse-status-pill rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase"
+                        style={
+                          {
+                            backgroundColor: tagMeta.bg,
+                            "--pill-dark": tagMeta.color,
+                            "--pill-light": tagMeta.lightColor,
+                          } as CSSProperties
+                        }
+                      >
+                        {tagMeta.label}
+                      </span>
+                    </div>
 
-                        <div className="flex flex-wrap items-center gap-2 text-sm font-extrabold text-white">
-                          <span
-                            className={
-                              m.reportedWinnerSide === "A" && isFinal
-                                ? "text-emerald-300"
-                                : ""
-                            }
-                          >
-                            [A] {m.sideALabel}
-                          </span>
-                          <span className="text-xs font-semibold text-slate-500">
-                            vs
-                          </span>
-                          <span
-                            className={
-                              m.reportedWinnerSide === "B" && isFinal
-                                ? "text-emerald-300"
-                                : m.isBye
-                                  ? "italic text-slate-500"
-                                  : ""
-                            }
-                          >
-                            [B] {m.sideBLabel}
-                          </span>
-                        </div>
+                    {/* REAL NAMES — never generic Side A / Side B */}
+                    <div className="flex flex-wrap items-center gap-2 text-sm font-extrabold text-white">
+                      <span
+                        className={
+                          m.reportedWinnerSide === "A" && isFinal
+                            ? "text-emerald-300"
+                            : ""
+                        }
+                      >
+                        {m.sideALabel}
+                      </span>
+                      <span className="text-xs font-semibold text-slate-500">
+                        vs
+                      </span>
+                      <span
+                        className={
+                          m.reportedWinnerSide === "B" && isFinal
+                            ? "text-emerald-300"
+                            : m.isBye
+                              ? "italic text-slate-500"
+                              : ""
+                        }
+                      >
+                        {m.sideBLabel}
+                      </span>
+                    </div>
 
-                        <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
-                          <span className="inline-flex items-center gap-1">
-                            <MapPin className="h-3 w-3 text-indigo-400" />
-                            {m.mapName}
-                          </span>
-                          {m.scheduledAt && (
-                            <span className="inline-flex items-center gap-1">
-                              <Calendar className="h-3 w-3" />
-                              {new Date(m.scheduledAt).toLocaleString("en-IN")}
-                            </span>
-                          )}
-                          {m.reportedWinnerSide && (
-                            <span>
-                              · Reported Winner:{" "}
-                              <strong className="text-white">
-                                Side {m.reportedWinnerSide}
-                              </strong>
-                            </span>
-                          )}
-                          {m.proofUrl && (
-                            <button
-                              type="button"
-                              onClick={() => setProofPreview(m)}
-                              className="inline-flex items-center gap-1 rounded-lg border border-indigo-500/40 bg-indigo-500/15 px-2 py-0.5 font-bold text-indigo-300 hover:bg-indigo-500/20"
-                            >
-                              <ImageIcon className="h-3 w-3" />
-                              View Screenshot
-                            </button>
-                          )}
-                        </div>
+                    <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
+                      <span className="inline-flex items-center gap-1">
+                        <MapPin className="h-3 w-3 text-indigo-400" />
+                        {m.mapName}
+                      </span>
+                      {m.scheduledAt && (
+                        <span className="inline-flex items-center gap-1">
+                          <Calendar className="h-3 w-3" />
+                          {new Date(m.scheduledAt).toLocaleString("en-IN")}
+                        </span>
+                      )}
+                      {reportedName && (
+                        <span>
+                          · {isFinal ? "Declared Winner" : "Reported Winner"}:{" "}
+                          <strong className="text-emerald-400">
+                            {reportedName}
+                          </strong>
+                        </span>
+                      )}
+                      {m.threadUrl && (
+                        <a
+                          href={m.threadUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2 py-0.5 font-bold text-slate-200 hover:border-indigo-500 hover:text-white"
+                        >
+                          <MessageSquare className="h-3 w-3 text-indigo-400" />
+                          Open Forum Post
+                          <ExternalLink className="h-2.5 w-2.5" />
+                        </a>
+                      )}
+                      {m.proofUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setProofPreview(m)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-indigo-500/40 bg-indigo-500/15 px-2 py-0.5 font-bold text-indigo-300 hover:bg-indigo-500/20"
+                        >
+                          <ImageIcon className="h-3 w-3" />
+                          View Proof
+                        </button>
+                      )}
+                    </div>
 
-                        {m.reviewNote && (
-                          <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-1.5 text-[11px] text-slate-300">
-                            <strong>Note: </strong>
-                            {m.reviewNote}
-                          </div>
-                        )}
+                    {m.channelCreationError && (
+                      <div className="flex items-center gap-1.5 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-300">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                        <span>
+                          Forum post creation failed:{" "}
+                          {m.channelCreationErrorMsg || "Check bot permissions."}
+                        </span>
                       </div>
+                    )}
 
-                      {/* Staff Operations */}
-                      {canManage && !m.isBye && (
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          {canReview && (
-                            <>
-                              <button
-                                type="button"
-                                disabled={isBusy}
-                                onClick={() =>
-                                  patchMatch(
-                                    m.id,
-                                    {
-                                      action: "approve",
-                                      winnerSide: m.reportedWinnerSide || "A",
-                                    },
-                                    `Match #${m.matchNumber} approved! Standings & next rounds synced.`
-                                  )
-                                }
-                                className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-[11px] font-extrabold text-white hover:bg-emerald-500 disabled:opacity-50"
-                              >
-                                <CheckCircle2 className="h-3.5 w-3.5" />
-                                Approve ({m.reportedWinnerSide || "A"})
-                              </button>
-                              <button
-                                type="button"
-                                disabled={isBusy}
-                                onClick={() => {
-                                  setModalNote("");
-                                  setActionModal({ match: m, mode: "reject" });
-                                }}
-                                className="inline-flex items-center gap-1 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-1.5 text-[11px] font-bold text-rose-300"
-                              >
-                                <XCircle className="h-3.5 w-3.5" />
-                                Reject
-                              </button>
-                              {m.status !== "disputed" && (
-                                <button
-                                  type="button"
-                                  disabled={isBusy}
-                                  onClick={() => {
-                                    setModalNote("");
-                                    setActionModal({ match: m, mode: "dispute" });
-                                  }}
-                                  className="inline-flex items-center gap-1 rounded-xl border border-amber-500/35 bg-amber-500/15 px-3 py-1.5 text-[11px] font-bold text-amber-300"
-                                >
-                                  <ShieldAlert className="h-3.5 w-3.5" />
-                                  Dispute
-                                </button>
-                              )}
-                            </>
-                          )}
+                    {m.reviewNote && (
+                      <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-1.5 text-[11px] text-slate-300">
+                        <strong>Note: </strong>
+                        {m.reviewNote}
+                      </div>
+                    )}
+                  </div>
 
-                          {!isFinal && (
-                            <>
-                              <button
-                                type="button"
-                                disabled={isBusy}
-                                onClick={() => {
-                                  setModalWinner("A");
-                                  setModalNote("");
-                                  setActionModal({ match: m, mode: "forfeit" });
-                                }}
-                                className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:border-amber-500/50"
-                              >
-                                <Flag className="h-3.5 w-3.5 text-amber-400" />
-                                Forfeit
-                              </button>
-                              <button
-                                type="button"
-                                disabled={isBusy}
-                                onClick={() => {
-                                  setModalMap(m.mapName);
-                                  setModalStatus(m.status);
-                                  setModalSchedule(
-                                    m.scheduledAt
-                                      ? m.scheduledAt.slice(0, 16)
-                                      : ""
-                                  );
-                                  setActionModal({ match: m, mode: "edit" });
-                                }}
-                                className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:border-indigo-500"
-                              >
-                                <Edit3 className="h-3.5 w-3.5 text-indigo-400" />
-                                Edit
-                              </button>
-                            </>
-                          )}
-
-                          {isFinal && !m.seriesId && (
+                  {/* Staff Actions — Showing Real Player/Team Names */}
+                  {canManage && !m.isBye && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {canReview && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() =>
+                              patchMatch(
+                                m.id,
+                                {
+                                  action: "approve",
+                                  winnerSide: m.reportedWinnerSide || "A",
+                                },
+                                `Match #${m.matchNumber} declared for ${reportedName || m.sideALabel}! Forum tag updated to Results Declared.`
+                              )
+                            }
+                            className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-[11px] font-extrabold text-white hover:bg-emerald-500 disabled:opacity-50"
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Approve {reportedName || m.sideALabel}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => {
+                              setModalNote("");
+                              setActionModal({ match: m, mode: "reject" });
+                            }}
+                            className="inline-flex items-center gap-1 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-1.5 text-[11px] font-bold text-rose-300"
+                          >
+                            <XCircle className="h-3.5 w-3.5" />
+                            Reject
+                          </button>
+                          {m.status !== "disputed" && (
                             <button
                               type="button"
                               disabled={isBusy}
                               onClick={() => {
-                                setModalWinner(
-                                  m.reportedWinnerSide === "A" ? "B" : "A"
-                                );
                                 setModalNote("");
-                                setActionModal({ match: m, mode: "override" });
+                                setActionModal({ match: m, mode: "dispute" });
                               }}
-                              className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:border-amber-500"
+                              className="inline-flex items-center gap-1 rounded-xl border border-amber-500/35 bg-amber-500/15 px-3 py-1.5 text-[11px] font-bold text-amber-300"
                             >
-                              Override Winner
+                              <ShieldAlert className="h-3.5 w-3.5" />
+                              Issue
                             </button>
                           )}
-                        </div>
+                        </>
+                      )}
+
+                      {!isFinal && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => {
+                              setModalWinner("A");
+                              setModalNote("");
+                              setActionModal({ match: m, mode: "forfeit" });
+                            }}
+                            className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:border-amber-500/50"
+                          >
+                            <Flag className="h-3.5 w-3.5 text-amber-400" />
+                            Forfeit
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => {
+                              setModalMap(m.mapName);
+                              setModalStatus(m.status);
+                              setModalSchedule(
+                                m.scheduledAt
+                                  ? m.scheduledAt.slice(0, 16)
+                                  : ""
+                              );
+                              setActionModal({ match: m, mode: "edit" });
+                            }}
+                            className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:border-indigo-500"
+                          >
+                            <Edit3 className="h-3.5 w-3.5 text-indigo-400" />
+                            Edit
+                          </button>
+                        </>
+                      )}
+
+                      {isFinal && !m.seriesId && (
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => {
+                            setModalWinner(
+                              m.reportedWinnerSide === "A" ? "B" : "A"
+                            );
+                            setModalNote("");
+                            setActionModal({ match: m, mode: "override" });
+                          }}
+                          className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-[11px] font-bold text-slate-200 hover:border-amber-500"
+                        >
+                          Override Winner
+                        </button>
                       )}
                     </div>
-                  </div>
-                );
-              })}
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* WEEK ANNOUNCEMENT MODAL */}
+      {weekAnnounceNum !== null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          onClick={() => setWeekAnnounceNum(null)}
+        >
+          <form
+            onSubmit={handleSendWeekAnnouncement}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg space-y-4 rounded-3xl border border-slate-700 bg-[#0b1120] p-6 shadow-2xl"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-extrabold text-white">
+                  Announce to Week {weekAnnounceNum}
+                </h2>
+                <p className="text-[11px] text-slate-400">
+                  Posts inside the locked Week {weekAnnounceNum} Announcements
+                  forum post (members cannot reply).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWeekAnnounceNum(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
-          )}
+
+            <textarea
+              required
+              minLength={2}
+              maxLength={3800}
+              rows={4}
+              value={weekAnnounceMsg}
+              onChange={(e) => setWeekAnnounceMsg(e.target.value)}
+              placeholder={`Write your Week ${weekAnnounceNum} announcement (schedule deadlines, rules, map notes)...`}
+              className="w-full rounded-2xl border border-slate-800 bg-slate-950 p-3 text-xs text-white focus:border-indigo-500 focus:outline-none"
+            />
+
+            <div className="space-y-2">
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs font-semibold text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={weekBroadcastAll}
+                  onChange={(e) => setWeekBroadcastAll(e.target.checked)}
+                  className="h-4 w-4 accent-indigo-500"
+                />
+                Broadcast into every match post in Week {weekAnnounceNum}
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs font-semibold text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={weekAlsoServer}
+                  onChange={(e) => setWeekAlsoServer(e.target.checked)}
+                  className="h-4 w-4 accent-indigo-500"
+                />
+                Also post in Server Announcement channel
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setWeekAnnounceNum(null)}
+                className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={busy || weekAnnounceMsg.trim().length < 2}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-5 py-2 text-xs font-extrabold text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                <Send className="h-3.5 w-3.5" />
+                {busy ? "Sending..." : "Send Announcement"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -572,11 +868,14 @@ export default function TournamentMatchesPage() {
             <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3.5">
               <div>
                 <div className="text-sm font-bold text-white">
-                  Match #{String(proofPreview.matchNumber).padStart(3, "0")}{" "}
-                  Proof Evidence
+                  Match #{proofPreview.matchNumber} Proof Evidence
                 </div>
                 <div className="text-[11px] text-slate-400">
-                  {proofPreview.sideALabel} vs {proofPreview.sideBLabel}
+                  {proofPreview.sideALabel} vs {proofPreview.sideBLabel} ·
+                  Reported Winner:{" "}
+                  <strong className="text-white">
+                    {proofPreview.reportedWinnerLabel || "—"}
+                  </strong>
                 </div>
               </div>
               <button
@@ -616,8 +915,8 @@ export default function TournamentMatchesPage() {
                   Create Custom Match
                 </h2>
                 <p className="text-[11px] text-slate-400">
-                  SSE Bot will automatically create a private Discord match room
-                  for the participants.
+                  SSE Bot will create a tagged match post inside the selected
+                  Week Forum automatically.
                 </p>
               </div>
               <button
@@ -632,7 +931,7 @@ export default function TournamentMatchesPage() {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className="mb-1 block text-xs font-bold text-slate-200">
-                  Side A ({t.mode === "team" ? "Team" : "Player"}) *
+                  Competitor 1 ({t.mode === "team" ? "Team" : "Player"}) *
                 </label>
                 <select
                   required
@@ -640,7 +939,7 @@ export default function TournamentMatchesPage() {
                   onChange={(e) => setSideAId(e.target.value)}
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
                 >
-                  <option value="">Select Side A...</option>
+                  <option value="">Select Competitor 1...</option>
                   {t.mode === "team"
                     ? activeTeams.map((tm) => (
                         <option key={tm.id} value={tm.id}>
@@ -657,7 +956,7 @@ export default function TournamentMatchesPage() {
 
               <div>
                 <label className="mb-1 block text-xs font-bold text-slate-200">
-                  Side B ({t.mode === "team" ? "Team" : "Player"}) *
+                  Competitor 2 ({t.mode === "team" ? "Team" : "Player"}) *
                 </label>
                 <select
                   required
@@ -665,7 +964,7 @@ export default function TournamentMatchesPage() {
                   onChange={(e) => setSideBId(e.target.value)}
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
                 >
-                  <option value="">Select Side B...</option>
+                  <option value="">Select Competitor 2...</option>
                   {t.mode === "team"
                     ? activeTeams
                         .filter((tm) => tm.id !== sideAId)
@@ -685,15 +984,17 @@ export default function TournamentMatchesPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div>
                 <label className="mb-1 block text-xs font-bold text-slate-200">
-                  Map Name
+                  Week Number
                 </label>
                 <input
-                  value={newMap}
-                  onChange={(e) => setNewMap(e.target.value)}
-                  placeholder={t.maps[0] || "Auto-rotated map"}
+                  type="number"
+                  min={1}
+                  max={52}
+                  value={newWeek}
+                  onChange={(e) => setNewWeek(Number(e.target.value))}
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
                 />
               </div>
@@ -707,6 +1008,17 @@ export default function TournamentMatchesPage() {
                   max={30}
                   value={newRound}
                   onChange={(e) => setNewRound(Number(e.target.value))}
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-200">
+                  Map Name
+                </label>
+                <input
+                  value={newMap}
+                  onChange={(e) => setNewMap(e.target.value)}
+                  placeholder={t.maps[0] || "Auto"}
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
                 />
               </div>
@@ -764,7 +1076,7 @@ export default function TournamentMatchesPage() {
         </div>
       )}
 
-      {/* Match Action Modal (Forfeit / Override / Reject / Dispute / Edit) */}
+      {/* Match Action Modal (Real Player/Team Names!) */}
       {actionModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
@@ -776,8 +1088,7 @@ export default function TournamentMatchesPage() {
           >
             <div className="flex items-center justify-between">
               <h2 className="text-base font-extrabold capitalize text-white">
-                {actionModal.mode} Match #
-                {String(actionModal.match.matchNumber).padStart(3, "0")}
+                {actionModal.mode} Match #{actionModal.match.matchNumber}
               </h2>
               <button
                 type="button"
@@ -792,7 +1103,7 @@ export default function TournamentMatchesPage() {
               actionModal.mode === "override") && (
               <div className="space-y-2">
                 <label className="block text-xs font-bold text-slate-200">
-                  Award Victory To
+                  Select Winner
                 </label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
@@ -804,7 +1115,7 @@ export default function TournamentMatchesPage() {
                         : "border-slate-800 bg-slate-950 text-slate-300"
                     }`}
                   >
-                    Side A: {actionModal.match.sideALabel}
+                    🏆 {actionModal.match.sideALabel}
                   </button>
                   <button
                     type="button"
@@ -815,7 +1126,7 @@ export default function TournamentMatchesPage() {
                         : "border-slate-800 bg-slate-950 text-slate-300"
                     }`}
                   >
-                    Side B: {actionModal.match.sideBLabel}
+                    🏆 {actionModal.match.sideBLabel}
                   </button>
                 </div>
               </div>
@@ -842,7 +1153,7 @@ export default function TournamentMatchesPage() {
                     onChange={(e) => setModalStatus(e.target.value)}
                     className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
                   >
-                    <option value="scheduled">Scheduled</option>
+                    <option value="scheduled">Pending / Scheduled</option>
                     <option value="ready">Ready to Play</option>
                     <option value="in_progress">In Progress</option>
                     <option value="pending_proof">Pending Proof</option>
@@ -888,6 +1199,10 @@ export default function TournamentMatchesPage() {
                 type="button"
                 disabled={matchBusyId === actionModal.match.id}
                 onClick={async () => {
+                  const chosenLabel =
+                    modalWinner === "A"
+                      ? actionModal.match.sideALabel
+                      : actionModal.match.sideBLabel;
                   if (actionModal.mode === "edit") {
                     await patchMatch(
                       actionModal.match.id,
@@ -915,7 +1230,7 @@ export default function TournamentMatchesPage() {
                         winnerSide: modalWinner,
                         note: modalNote.trim(),
                       },
-                      `Forfeit awarded to Side ${modalWinner}.`
+                      `Forfeit declared for ${chosenLabel}.`
                     );
                   } else if (actionModal.mode === "override") {
                     await patchMatch(
@@ -925,7 +1240,7 @@ export default function TournamentMatchesPage() {
                         winnerSide: modalWinner,
                         note: modalNote.trim(),
                       },
-                      `Winner overridden to Side ${modalWinner}.`
+                      `Winner overridden to ${chosenLabel}.`
                     );
                   } else {
                     await patchMatch(
@@ -934,7 +1249,7 @@ export default function TournamentMatchesPage() {
                         action: actionModal.mode,
                         note: modalNote.trim(),
                       },
-                      `Match marked ${actionModal.mode}.`
+                      `Match marked ${actionModal.mode} (Forum tag set to Issue).`
                     );
                   }
                 }}

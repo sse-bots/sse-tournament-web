@@ -19,6 +19,7 @@ import {
   Monitor,
   Moon,
   Plus,
+  RefreshCw,
   ScrollText,
   Search,
   Server,
@@ -32,9 +33,10 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/components/AuthContext";
-import { useWorkspace } from "@/components/WorkspaceContext";
+import { GlobalSyncLoader } from "@/components/GlobalSyncLoader";
 import { FairPlayBadge, RoleBadge } from "@/components/RoleBadge";
 import { ThemeCustomizer } from "@/components/ThemeCustomizer";
+import { useWorkspace } from "@/components/WorkspaceContext";
 import { SITE_SETTINGS } from "@/lib/site-settings";
 import { STATUS_META } from "@/lib/tournament-types";
 import {
@@ -64,7 +66,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     guildId,
     tournamentId,
     serverData,
+    serverLoading,
     tournamentMeta,
+    tournamentLoading,
   } = useWorkspace();
 
   const [dockOpen, setDockOpen] = useState(false);
@@ -117,7 +121,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // -------------------------------------------------------------------------
   // Build Dynamic 3-Level Contextual Sidebar Links
-  // NOTE: Games & Tournaments NEVER appear in Main Menu — only inside a Server!
+  // Rules enforced:
+  // 1. Games & Tournaments NEVER appear in the global Main Menu bar.
+  // 2. Normal members only see Tournaments in Server Workspace, and inside a
+  //    Tournament only see My Match & Info, Standings & Results, and (if team
+  //    mode) Teams & Rosters.
+  // 3. Teams & Rosters is ONLY shown when tournament.mode === "team" (hidden
+  //    even for Owners & Admins in solo/individual tournaments).
   // -------------------------------------------------------------------------
   let navSectionTitle = "Main Menu";
   let navItems: NavItem[] = [];
@@ -133,65 +143,78 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     navSectionTitle = "Server Workspace";
     const base = `/servers/${guildId}`;
     const access = serverData?.access;
-    navItems = [
-      { href: base, label: "Server Overview", icon: LayoutDashboard, exact: true },
-      { href: `${base}/games`, label: "Games", icon: Gamepad2, exact: false },
-      { href: `${base}/tournaments`, label: "Tournaments", icon: Trophy, exact: false },
-    ];
+
     if (access?.canViewStaffTools) {
-      navItems.push({
-        href: `${base}/tickets`,
-        label: "Support Tickets",
-        icon: LifeBuoy,
-        badge: serverData?.stats.openTickets || 0,
-        badgeTone: "amber",
-      });
-    }
-    if (access?.canManageServerSettings) {
-      navItems.push({
-        href: `${base}/settings`,
-        label: "Server Settings",
-        icon: Settings,
-      });
-    }
-    if (access?.canViewStaffTools) {
+      navItems = [
+        { href: base, label: "Server Overview", icon: LayoutDashboard, exact: true },
+        { href: `${base}/games`, label: "Games", icon: Gamepad2, exact: false },
+        { href: `${base}/tournaments`, label: "Tournaments", icon: Trophy, exact: false },
+        {
+          href: `${base}/tickets`,
+          label: "Support Tickets",
+          icon: LifeBuoy,
+          badge: serverData?.stats.openTickets || 0,
+          badgeTone: "amber",
+        },
+      ];
+      if (access.canManageServerSettings) {
+        navItems.push({
+          href: `${base}/settings`,
+          label: "Server Settings",
+          icon: Settings,
+        });
+      }
       navItems.push({
         href: `${base}/audit`,
         label: "Audit Logs",
         icon: ScrollText,
       });
+    } else {
+      // Normal Server Member: clean, distraction-free Tournaments view only
+      navItems = [
+        { href: `${base}/tournaments`, label: "Tournaments", icon: Trophy, exact: false },
+      ];
     }
   } else if (level === "tournament" && guildId && tournamentId) {
     navSectionTitle = "Tournament Menu";
     const tBase = `/servers/${guildId}/tournaments/${tournamentId}`;
     const tAccess = tournamentMeta?.access;
-    const tCounts = tournamentMeta?.tournament.counts;
+    const tDoc = tournamentMeta?.tournament;
+    const tCounts = tDoc?.counts;
     const isStaff = Boolean(
       tAccess?.canManageTournament || tAccess?.canAssignModerators
     );
+    const isTeamMode = tDoc?.mode === "team";
     const pendingReviewCount =
       (tCounts?.pendingReview || 0) + (tCounts?.disputed || 0);
 
-    navItems = [
-      { href: tBase, label: "Overview & Rules", icon: LayoutDashboard, exact: true },
-      {
-        href: `${tBase}/matches`,
-        label: "Matches & Brackets",
-        icon: Swords,
-        badge: isStaff ? pendingReviewCount : 0,
-        badgeTone: "rose",
-      },
-      { href: `${tBase}/standings`, label: "Standings & Results", icon: Trophy },
-      {
-        href: `${tBase}/players`,
-        label: "Players & Power",
-        icon: Users,
-        badge: isStaff ? tCounts?.pendingPower || 0 : 0,
-        badgeTone: "amber",
-      },
-      { href: `${tBase}/teams`, label: "Teams & Rosters", icon: UsersRound },
-    ];
     if (isStaff) {
+      navItems = [
+        { href: tBase, label: "Overview & Rules", icon: LayoutDashboard, exact: true },
+        {
+          href: `${tBase}/matches`,
+          label: "Matches & Weeks",
+          icon: Swords,
+          badge: pendingReviewCount,
+          badgeTone: "rose",
+        },
+        { href: `${tBase}/standings`, label: "Standings & Results", icon: Trophy },
+        {
+          href: `${tBase}/players`,
+          label: "Players & Power",
+          icon: Users,
+          badge: tCounts?.pendingPower || 0,
+          badgeTone: "amber",
+        },
+      ];
+      // Teams tab appears ONLY when tournament is team-based!
+      if (isTeamMode) {
+        navItems.push({
+          href: `${tBase}/teams`,
+          label: "Teams & Rosters",
+          icon: UsersRound,
+        });
+      }
       navItems.push(
         {
           href: `${tBase}/settings`,
@@ -204,6 +227,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           icon: Activity,
         }
       );
+    } else {
+      // Normal Member inside a Tournament: ONLY My Match & Info, Standings & Results, and (if team mode) Teams
+      navItems = [
+        { href: tBase, label: "My Match & Info", icon: Swords, exact: true },
+        { href: `${tBase}/standings`, label: "Standings & Results", icon: Trophy },
+      ];
+      if (isTeamMode) {
+        navItems.push({
+          href: `${tBase}/teams`,
+          label: "Teams & Rosters",
+          icon: UsersRound,
+        });
+      }
     }
   }
 
@@ -225,6 +261,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const activeTourneyStatus = activeTourney
     ? STATUS_META[activeTourney.status] || STATUS_META.draft
     : null;
+  const isWorkspaceSyncing = serverLoading || tournamentLoading;
 
   function renderNavLink(item: NavItem, idx = 0) {
     const Icon = item.icon;
@@ -297,18 +334,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   {activeServerName}
                 </div>
                 <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-slate-400">
-                  <span
-                    className={`h-1.5 w-1.5 rounded-full ${
-                      serverData?.settings.botOnline
-                        ? "bg-emerald-500"
-                        : "bg-slate-500"
-                    }`}
-                  />
-                  <span>
-                    {serverData?.settings.botOnline
-                      ? "Bot Online"
-                      : "Web Sync Ready"}
-                  </span>
+                  {serverLoading ? (
+                    <>
+                      <RefreshCw className="h-2.5 w-2.5 animate-spin text-indigo-400" />
+                      <span>Syncing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full ${
+                          serverData?.settings.botOnline
+                            ? "bg-emerald-500"
+                            : "bg-slate-500"
+                        }`}
+                      />
+                      <span>
+                        {serverData?.settings.botOnline
+                          ? "Bot Online"
+                          : "Web Sync Ready"}
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -357,22 +403,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <span className="truncate text-[10px] font-bold uppercase tracking-wider text-slate-400">
                 {activeTourney?.gameName || "Tournament"}
               </span>
-              {activeTourneyStatus && (
-                <span
-                  className="sse-status-pill inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-extrabold uppercase"
-                  style={
-                    {
-                      backgroundColor: activeTourneyStatus.bg,
-                      "--pill-dark": activeTourneyStatus.color,
-                      "--pill-light": activeTourneyStatus.lightColor,
-                    } as CSSProperties
-                  }
-                >
-                  {activeTourneyStatus.pulse && (
-                    <span className="sse-status-dot h-1.5 w-1.5 animate-pulse rounded-full" />
-                  )}
-                  {activeTourneyStatus.label}
-                </span>
+              {tournamentLoading ? (
+                <RefreshCw className="h-3 w-3 animate-spin text-indigo-400" />
+              ) : (
+                activeTourneyStatus && (
+                  <span
+                    className="sse-status-pill inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-extrabold uppercase"
+                    style={
+                      {
+                        backgroundColor: activeTourneyStatus.bg,
+                        "--pill-dark": activeTourneyStatus.color,
+                        "--pill-light": activeTourneyStatus.lightColor,
+                      } as CSSProperties
+                    }
+                  >
+                    {activeTourneyStatus.pulse && (
+                      <span className="sse-status-dot h-1.5 w-1.5 animate-pulse rounded-full" />
+                    )}
+                    {activeTourneyStatus.label}
+                  </span>
+                )
               )}
             </div>
             <div className="mt-1 line-clamp-2 text-xs font-extrabold text-white">
@@ -416,8 +466,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         ? activeServerName
         : SITE_SETTINGS.siteName;
 
-  const mobileSubtitle =
-    level === "tournament"
+  const mobileSubtitle = isWorkspaceSyncing
+    ? "Syncing..."
+    : level === "tournament"
       ? activeServerName
       : level === "server"
         ? serverData?.access.role === "owner"
@@ -431,6 +482,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen w-full overflow-x-clip bg-[#07090e] text-slate-100 lg:flex">
+      <GlobalSyncLoader />
+
       {/* Desktop Left Sidebar */}
       <aside className="hidden border-slate-800/80 bg-[#0a0d14] lg:fixed lg:inset-y-0 lg:left-0 lg:z-40 lg:flex lg:w-64 lg:flex-col lg:border-r lg:border-slate-800/80 lg:bg-[#0a0d14]">
         <div className="flex h-16 items-center justify-between border-b border-slate-800/80 px-4">
@@ -579,10 +632,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               {mobileTitle}
             </div>
             <div className="flex items-center gap-1 text-[10px] text-slate-400">
-              <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ backgroundColor: activePrimaryColor.c500 }}
-              />
+              {isWorkspaceSyncing ? (
+                <RefreshCw className="h-2.5 w-2.5 shrink-0 animate-spin text-indigo-400" />
+              ) : (
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: activePrimaryColor.c500 }}
+                />
+              )}
               <span className="truncate">{mobileSubtitle}</span>
             </div>
           </div>

@@ -28,7 +28,7 @@ import {
 
 export default function TournamentSettingsPage() {
   const router = useRouter();
-  const { guildId, data, busy, runAction, setError, showToast } =
+  const { guildId, data, busy, runAction, openCloseTournamentModal, setError, showToast } =
     useTournamentDetail();
 
   // Moderator & Discord Roles state (Owner Only writes)
@@ -649,6 +649,19 @@ export default function TournamentSettingsPage() {
                 className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:border-indigo-500"
               >
                 Reopen Registration
+              </button>
+            )}
+
+          {access.canManageTournament &&
+            !["completed", "cancelled", "archived"].includes(t.status) && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={openCloseTournamentModal}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-extrabold text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                <Lock className="h-3.5 w-3.5" />
+                Close Tournament &amp; Lock Forums
               </button>
             )}
 

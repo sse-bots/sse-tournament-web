@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { useMemo, useState } from "react";
 import {
   Ban,
@@ -12,6 +14,7 @@ import {
   Users,
   X,
   XCircle,
+  Lock,
 } from "lucide-react";
 import { useTournamentDetail } from "@/components/TournamentDetailContext";
 import type { RegistrationRow } from "@/lib/tournament-types";
@@ -57,6 +60,37 @@ export default function TournamentPlayersPage() {
   }, [regs, search, filter]);
 
   if (!data || !t || !access) return null;
+
+  const isStaff = access.canManageTournament || access.canAssignModerators;
+  if (!isStaff) {
+    return (
+      <div className="mx-auto max-w-md rounded-3xl border border-amber-500/40 bg-slate-900/75 p-8 text-center">
+        <Lock className="mx-auto mb-3 h-9 w-9 text-amber-400" />
+        <h2 className="text-base font-extrabold text-white">
+          Staff Only — Players & Squad-Power Queue
+        </h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-slate-400">
+          This section is restricted to the Server Owner and assigned Tournament
+          Moderators. View your own matches, Discord forum post links, and live
+          standings in My Match &amp; Info.
+        </p>
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
+          <Link
+            href={`/servers/${t.guildId}/tournaments/${t.id}`}
+            className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-500"
+          >
+            My Match &amp; Info
+          </Link>
+          <Link
+            href={`/servers/${t.guildId}/tournaments/${t.id}/standings`}
+            className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200 hover:border-indigo-500"
+          >
+            Standings &amp; Results
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   const canManage = access.canManageTournament;
   const pendingCount = regs.filter(

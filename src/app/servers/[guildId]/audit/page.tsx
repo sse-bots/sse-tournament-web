@@ -79,8 +79,8 @@ export default function ServerAuditLogsPage() {
             onClick={loadLogs}
             className="inline-flex items-center gap-1.5 self-start rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-bold text-slate-200 hover:border-indigo-500 sm:self-center"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            {loading ? "Syncing..." : "Refresh"}
           </button>
         </div>
 
