@@ -109,8 +109,18 @@ export async function POST(
     : [];
   const weekNumber = d.weekNumber || Math.max(1, ...existingWeeks, Number(lastDoc?.weekNumber ?? 1));
 
+  const existingInWeek = await matches
+    .find({ tournamentId: tid, weekNumber })
+    .project({ weekMatchNumber: 1 })
+    .toArray();
+  const maxWeekMatch = existingInWeek.reduce(
+    (mx, item) => Math.max(mx, Number(item.weekMatchNumber ?? 0)),
+    existingInWeek.length
+  );
+  const weekMatchNumber = maxWeekMatch + 1;
+
   const maps = Array.isArray(t.maps) && t.maps.length > 0 ? t.maps.map(String) : ["To be announced"];
-  const mapName = d.mapName || maps[(nextNumber - 1) % maps.length];
+  const mapName = d.mapName || maps[(weekMatchNumber - 1) % maps.length];
 
   let bracketObjId = null;
   if (d.bracketId && Array.isArray(t.brackets)) {
@@ -123,6 +133,7 @@ export async function POST(
     guildId: String(t.guildId),
     tournamentId: tid,
     matchNumber: nextNumber,
+    weekMatchNumber,
     weekNumber,
     bracketId: bracketObjId,
     sideAUserIds,
@@ -179,11 +190,11 @@ export async function POST(
     action: "match.web_create",
     targetType: "Match",
     targetId: String(inserted.insertedId),
-    details: { matchNumber: nextNumber, weekNumber, sideALabel, sideBLabel, mapName },
+    details: { matchNumber: nextNumber, weekMatchNumber, weekNumber, sideALabel, sideBLabel, mapName },
   });
 
   return NextResponse.json(
-    { ok: true, id: String(inserted.insertedId), matchNumber: nextNumber, weekNumber },
+    { ok: true, id: String(inserted.insertedId), matchNumber: nextNumber, weekMatchNumber, weekNumber },
     { status: 201 }
   );
 }

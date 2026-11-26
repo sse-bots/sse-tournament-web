@@ -25,7 +25,10 @@ import {
   X,
   XCircle,
 } from "lucide-react";
+import { AnnouncementComposer } from "@/components/AnnouncementComposer";
 import { BracketBoard } from "@/components/BracketBoard";
+import { ConfirmModal } from "@/components/ConfirmModal";
+import { CustomSelect } from "@/components/CustomSelect";
 import { useTournamentDetail } from "@/components/TournamentDetailContext";
 import {
   FORUM_TAG_META,
@@ -46,11 +49,12 @@ export default function TournamentMatchesPage() {
   const [matchBusyId, setMatchBusyId] = useState<string | null>(null);
   const [proofPreview, setProofPreview] = useState<MatchRow | null>(null);
 
-  // Week Announcement modal
+  // Week Announcement & Close Week confirmation modals
   const [weekAnnounceNum, setWeekAnnounceNum] = useState<number | null>(null);
   const [weekAnnounceMsg, setWeekAnnounceMsg] = useState("");
   const [weekBroadcastAll, setWeekBroadcastAll] = useState(true);
   const [weekAlsoServer, setWeekAlsoServer] = useState(false);
+  const [closeWeekNum, setCloseWeekNum] = useState<number | null>(null);
 
   // Create custom match modal
   const [createOpen, setCreateOpen] = useState(false);
@@ -208,7 +212,7 @@ export default function TournamentMatchesPage() {
       setNewMap("");
       setNewSchedule("");
       showToast(
-        `Match #${j.matchNumber} added to Week ${j.weekNumber}! Bot will create the forum post (~15s).`
+        `Week ${j.weekNumber} · Match #${j.weekMatchNumber ?? j.matchNumber} added! Bot will create the forum post (~15s).`
       );
       await refresh();
     } finally {
@@ -382,19 +386,7 @@ export default function TournamentMatchesPage() {
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => {
-                            if (
-                              !confirm(
-                                `Close Week ${wk.weekNumber} and lock all match forum posts in Week ${wk.weekNumber}?`
-                              )
-                            ) {
-                              return;
-                            }
-                            runAction({
-                              action: "close_week",
-                              weekNumber: wk.weekNumber,
-                            });
-                          }}
+                          onClick={() => setCloseWeekNum(wk.weekNumber)}
                           className="inline-flex items-center gap-1 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-1.5 text-[11px] font-bold text-rose-300 disabled:opacity-50"
                         >
                           <Lock className="h-3.5 w-3.5" />
@@ -461,18 +453,19 @@ export default function TournamentMatchesPage() {
           </div>
 
           {weekNumbers.length > 0 && (
-            <select
+            <CustomSelect
+              className="min-w-[150px]"
               value={weekFilter}
-              onChange={(e) => setWeekFilter(e.target.value)}
-              className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
-            >
-              <option value="all">All Weeks ({weekNumbers.length})</option>
-              {weekNumbers.map((w) => (
-                <option key={w} value={String(w)}>
-                  Week {w}
-                </option>
-              ))}
-            </select>
+              onChange={setWeekFilter}
+              searchable={false}
+              options={[
+                { value: "all", label: `All Weeks (${weekNumbers.length})` },
+                ...weekNumbers.map((w) => ({
+                  value: String(w),
+                  label: `Week ${w}`,
+                })),
+              ]}
+            />
           )}
         </div>
 
@@ -545,7 +538,7 @@ export default function TournamentMatchesPage() {
                         Week {m.weekNumber || 1}
                       </span>
                       <span className="font-mono text-xs font-extrabold text-white">
-                        Match #{m.matchNumber}
+                        Match #{m.weekMatchNumber}
                       </span>
                       {m.bracketName && (
                         <span className="rounded-lg bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
@@ -674,7 +667,7 @@ export default function TournamentMatchesPage() {
                                   action: "approve",
                                   winnerSide: m.reportedWinnerSide || "A",
                                 },
-                                `Match #${m.matchNumber} declared for ${reportedName || m.sideALabel}! Forum tag updated to Results Declared.`
+                                `Week ${m.weekNumber || 1} · Match #${m.weekMatchNumber} declared for ${reportedName || m.sideALabel}! Forum tag updated to Results Declared.`
                               )
                             }
                             className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-1.5 text-[11px] font-extrabold text-white hover:bg-emerald-500 disabled:opacity-50"
@@ -802,15 +795,17 @@ export default function TournamentMatchesPage() {
               </button>
             </div>
 
-            <textarea
-              required
-              minLength={2}
-              maxLength={3800}
-              rows={4}
+            <AnnouncementComposer
               value={weekAnnounceMsg}
-              onChange={(e) => setWeekAnnounceMsg(e.target.value)}
-              placeholder={`Write your Week ${weekAnnounceNum} announcement (schedule deadlines, rules, map notes)...`}
-              className="w-full rounded-2xl border border-slate-800 bg-slate-950 p-3 text-xs text-white focus:border-indigo-500 focus:outline-none"
+              onChange={setWeekAnnounceMsg}
+              roles={data.discordRoles || []}
+              channels={data.discordChannels || []}
+              tournamentName={t.name}
+              weekNumber={weekAnnounceNum}
+              required
+              disabled={busy}
+              rows={4}
+              placeholder={`Write your Week ${weekAnnounceNum} announcement... Type @ to mention roles or format with Bold/Italic`}
             />
 
             <div className="space-y-2">
@@ -868,7 +863,7 @@ export default function TournamentMatchesPage() {
             <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3.5">
               <div>
                 <div className="text-sm font-bold text-white">
-                  Match #{proofPreview.matchNumber} Proof Evidence
+                  Week {proofPreview.weekNumber || 1} · Match #{proofPreview.weekMatchNumber} Proof Evidence
                 </div>
                 <div className="text-[11px] text-slate-400">
                   {proofPreview.sideALabel} vs {proofPreview.sideBLabel} ·
@@ -933,54 +928,54 @@ export default function TournamentMatchesPage() {
                 <label className="mb-1 block text-xs font-bold text-slate-200">
                   Competitor 1 ({t.mode === "team" ? "Team" : "Player"}) *
                 </label>
-                <select
-                  required
+                <CustomSelect
                   value={sideAId}
-                  onChange={(e) => setSideAId(e.target.value)}
-                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
-                >
-                  <option value="">Select Competitor 1...</option>
-                  {t.mode === "team"
-                    ? activeTeams.map((tm) => (
-                        <option key={tm.id} value={tm.id}>
-                          {tm.name}
-                        </option>
-                      ))
-                    : registrations.map((r) => (
-                        <option key={r.id} value={r.userId}>
-                          {r.inGameId || r.discordDisplayName || r.userId}
-                        </option>
-                      ))}
-                </select>
+                  onChange={setSideAId}
+                  placeholder="Select Competitor 1..."
+                  searchPlaceholder="Search competitor..."
+                  searchable
+                  options={[
+                    { value: "", label: "Select Competitor 1..." },
+                    ...(t.mode === "team"
+                      ? activeTeams.map((tm) => ({
+                          value: tm.id,
+                          label: tm.name,
+                        }))
+                      : registrations.map((r) => ({
+                          value: r.userId,
+                          label: r.inGameId || r.discordDisplayName || r.userId,
+                        }))),
+                  ]}
+                />
               </div>
 
               <div>
                 <label className="mb-1 block text-xs font-bold text-slate-200">
                   Competitor 2 ({t.mode === "team" ? "Team" : "Player"}) *
                 </label>
-                <select
-                  required
+                <CustomSelect
                   value={sideBId}
-                  onChange={(e) => setSideBId(e.target.value)}
-                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
-                >
-                  <option value="">Select Competitor 2...</option>
-                  {t.mode === "team"
-                    ? activeTeams
-                        .filter((tm) => tm.id !== sideAId)
-                        .map((tm) => (
-                          <option key={tm.id} value={tm.id}>
-                            {tm.name}
-                          </option>
-                        ))
-                    : registrations
-                        .filter((r) => r.userId !== sideAId)
-                        .map((r) => (
-                          <option key={r.id} value={r.userId}>
-                            {r.inGameId || r.discordDisplayName || r.userId}
-                          </option>
-                        ))}
-                </select>
+                  onChange={setSideBId}
+                  placeholder="Select Competitor 2..."
+                  searchPlaceholder="Search competitor..."
+                  searchable
+                  options={[
+                    { value: "", label: "Select Competitor 2..." },
+                    ...(t.mode === "team"
+                      ? activeTeams
+                          .filter((tm) => tm.id !== sideAId)
+                          .map((tm) => ({
+                            value: tm.id,
+                            label: tm.name,
+                          }))
+                      : registrations
+                          .filter((r) => r.userId !== sideAId)
+                          .map((r) => ({
+                            value: r.userId,
+                            label: r.inGameId || r.discordDisplayName || r.userId,
+                          }))),
+                  ]}
+                />
               </div>
             </div>
 
@@ -1029,18 +1024,18 @@ export default function TournamentMatchesPage() {
                 <label className="mb-1 block text-xs font-bold text-slate-200">
                   Power Bracket
                 </label>
-                <select
+                <CustomSelect
                   value={newBracketId}
-                  onChange={(e) => setNewBracketId(e.target.value)}
-                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
-                >
-                  <option value="">No bracket</option>
-                  {t.brackets.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setNewBracketId}
+                  searchable={t.brackets.length > 6}
+                  options={[
+                    { value: "", label: "No bracket" },
+                    ...t.brackets.map((b) => ({
+                      value: b.id,
+                      label: b.name,
+                    })),
+                  ]}
+                />
               </div>
             )}
 
@@ -1088,7 +1083,7 @@ export default function TournamentMatchesPage() {
           >
             <div className="flex items-center justify-between">
               <h2 className="text-base font-extrabold capitalize text-white">
-                {actionModal.mode} Match #{actionModal.match.matchNumber}
+                {actionModal.mode} Week {actionModal.match.weekNumber || 1} · Match #{actionModal.match.weekMatchNumber}
               </h2>
               <button
                 type="button"
@@ -1148,17 +1143,18 @@ export default function TournamentMatchesPage() {
                   <label className="mb-1 block text-xs font-bold text-slate-200">
                     Match Status
                   </label>
-                  <select
+                  <CustomSelect
                     value={modalStatus}
-                    onChange={(e) => setModalStatus(e.target.value)}
-                    className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
-                  >
-                    <option value="scheduled">Pending / Scheduled</option>
-                    <option value="ready">Ready to Play</option>
-                    <option value="in_progress">In Progress</option>
-                    <option value="pending_proof">Pending Proof</option>
-                    <option value="postponed">Postponed</option>
-                  </select>
+                    onChange={setModalStatus}
+                    searchable={false}
+                    options={[
+                      { value: "scheduled", label: "Pending / Scheduled" },
+                      { value: "ready", label: "Ready to Play" },
+                      { value: "in_progress", label: "In Progress" },
+                      { value: "pending_proof", label: "Pending Proof" },
+                      { value: "postponed", label: "Postponed" },
+                    ]}
+                  />
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-bold text-slate-200">
@@ -1261,6 +1257,30 @@ export default function TournamentMatchesPage() {
           </div>
         </div>
       )}
+          <ConfirmModal
+        open={closeWeekNum !== null}
+        title={closeWeekNum !== null ? `Close Week ${closeWeekNum}?` : "Close Week"}
+        description={
+          closeWeekNum !== null
+            ? `This will lock all match forum posts in Week ${closeWeekNum} and post an official closure notice in the locked Week ${closeWeekNum} Announcement post.`
+            : ""
+        }
+        confirmLabel="Close & Lock Week"
+        variant="warning"
+        inputLabel="Closing Note (Optional)"
+        inputPlaceholder="e.g. Week complete! Next week pairings coming soon."
+        busy={busy}
+        onClose={() => setCloseWeekNum(null)}
+        onConfirm={async (reasonText) => {
+          if (closeWeekNum === null) return;
+          const res = await runAction({
+            action: "close_week",
+            weekNumber: closeWeekNum,
+            reason: reasonText || undefined,
+          });
+          if (res.ok) setCloseWeekNum(null);
+        }}
+      />
     </div>
   );
 }

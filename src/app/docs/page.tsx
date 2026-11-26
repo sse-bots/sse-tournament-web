@@ -15,6 +15,7 @@ import {
   Trophy,
 } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
+import { CustomSelect } from "@/components/CustomSelect";
 import {
   BOT_COMMANDS,
   DOC_CATEGORIES,
@@ -138,10 +139,15 @@ export default function BotDocsPage() {
               <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
               <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search command, parameter, or keyword..." className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2 pl-9 pr-3 text-xs text-white focus:border-indigo-500 focus:outline-none" />
             </div>
-            <select value={category} onChange={(e) => setCategory(e.target.value as "all" | DocCommandCategory)} className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white">
-              <option value="all">All Categories ({BOT_COMMANDS.length})</option>
-              {DOC_CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
-            </select>
+            <CustomSelect
+              value={category}
+              onChange={(val) => setCategory(val as "all" | DocCommandCategory)}
+              options={[
+                { value: "all", label: `All Categories (${BOT_COMMANDS.length})` },
+                ...DOC_CATEGORIES.map((c) => ({ value: c.id, label: c.label })),
+              ]}
+              searchPlaceholder="Search categories..."
+            />
           </div>
 
           <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto pb-1">

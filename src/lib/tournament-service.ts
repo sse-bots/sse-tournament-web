@@ -497,7 +497,14 @@ export async function getFullTournamentDetail(
 
   const guildIdStr = String(tournamentDoc.guildId || "");
 
+  const weekMatchCounters = new Map<number, number>();
   const mappedMatches: MatchRow[] = matchDocs.map((m) => {
+    const wkNum = Number(m.weekNumber ?? m.roundNumber ?? 1);
+    const nextSeq = (weekMatchCounters.get(wkNum) || 0) + 1;
+    weekMatchCounters.set(wkNum, nextSeq);
+    const rawWeekMatch = Number(m.weekMatchNumber ?? 0);
+    const weekMatchNumber =
+      Number.isFinite(rawWeekMatch) && rawWeekMatch >= 1 ? rawWeekMatch : nextSeq;
     const sideAIds = Array.isArray(m.sideAUserIds) ? m.sideAUserIds.map(String) : [];
     const sideBIds = Array.isArray(m.sideBUserIds) ? m.sideBUserIds.map(String) : [];
     const sideATeam = m.sideATeamId ? String(m.sideATeamId) : null;
@@ -539,7 +546,8 @@ export async function getFullTournamentDetail(
     return {
       id: String(m._id),
       matchNumber: Number(m.matchNumber ?? 0),
-      weekNumber: Number(m.weekNumber ?? m.roundNumber ?? 1),
+      weekMatchNumber,
+      weekNumber: wkNum,
       roundNumber: Number(m.roundNumber ?? 1),
       bracketId: bId,
       bracketName: bId ? bracketNameMap.get(bId) || null : null,

@@ -129,7 +129,7 @@ export function BracketBoard({
                     <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 bg-slate-950/60 px-3.5 py-2">
                       <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-300">
                         <span className="font-mono text-indigo-400">
-                          Match {m.matchNumber}
+                          Match {m.weekMatchNumber}
                         </span>
                         {m.seriesIndex && m.seriesBestOf && (
                           <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold text-amber-300">
@@ -266,7 +266,7 @@ export function BracketBoard({
             <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3.5">
               <div>
                 <div className="text-sm font-bold text-white">
-                  Match #{proofPreview.matchNumber} Proof Evidence
+                  Week {proofPreview.weekNumber || 1} · Match #{proofPreview.weekMatchNumber} Proof Evidence
                 </div>
                 <div className="text-[11px] text-slate-400">
                   {proofPreview.sideALabel} vs {proofPreview.sideBLabel} ·

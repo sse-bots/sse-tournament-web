@@ -13,6 +13,7 @@ import {
   Trophy,
   X,
 } from "lucide-react";
+import { ConfirmModal } from "@/components/ConfirmModal";
 import { ServerGuard } from "@/components/ServerGuard";
 import { useWorkspace } from "@/components/WorkspaceContext";
 import type { GameRow } from "@/lib/tournament-types";
@@ -37,6 +38,8 @@ export default function ServerGamesPage() {
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<GameRow | null>(null);
+  const [deletingGame, setDeletingGame] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -124,26 +127,30 @@ export default function ServerGamesPage() {
     }
   }
 
-  async function deleteGame(g: GameRow) {
-    if (
-      !confirm(
-        `Deactivate "${g.name}"? Existing tournaments keep their history, but it will be hidden for new tournaments.`
-      )
-    ) {
-      return;
-    }
+  function deleteGame(g: GameRow) {
+    setDeleteTarget(g);
+  }
+
+  async function confirmDeleteGame() {
+    if (!deleteTarget) return;
+    setDeletingGame(true);
     setError(null);
-    const res = await fetch(
-      `/api/servers/${encodeURIComponent(guildId)}/games?id=${encodeURIComponent(g.id)}`,
-      { method: "DELETE", credentials: "include" }
-    );
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      setError(j.error || "Could not remove game.");
-      return;
+    try {
+      const res = await fetch(
+        `/api/servers/${encodeURIComponent(guildId)}/games?id=${encodeURIComponent(deleteTarget.id)}`,
+        { method: "DELETE", credentials: "include" }
+      );
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(j.error || "Could not remove game.");
+        return;
+      }
+      showToast(`Deactivated "${deleteTarget.name}".`);
+      setDeleteTarget(null);
+      await Promise.all([loadGames(), refreshServer()]);
+    } finally {
+      setDeletingGame(false);
     }
-    showToast(`Deactivated "${g.name}".`);
-    await Promise.all([loadGames(), refreshServer()]);
   }
 
   const existingNamesLower = new Set(games.map((g) => g.name.toLowerCase()));
@@ -364,6 +371,16 @@ export default function ServerGamesPage() {
           </div>
         )}
       </div>
+          <ConfirmModal
+        open={Boolean(deleteTarget)}
+        title={deleteTarget ? `Deactivate "${deleteTarget.name}"?` : "Deactivate Game"}
+        description="Existing tournaments keep their full history, but this game will be hidden when creating new tournaments."
+        confirmLabel={deletingGame ? "Deactivating..." : "Deactivate Game"}
+        variant="danger"
+        busy={deletingGame}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={confirmDeleteGame}
+      />
     </ServerGuard>
   );
 }

@@ -31,6 +31,7 @@ import {
   DiscordRoleMultiPicker,
   DiscordSingleRolePicker,
 } from "@/components/DiscordRolePicker";
+import { CustomSelect } from "@/components/CustomSelect";
 import { ServerGuard } from "@/components/ServerGuard";
 import { useWorkspace } from "@/components/WorkspaceContext";
 import {
@@ -688,18 +689,21 @@ function WizardInner() {
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <select
+                    <CustomSelect
+                      className="min-w-[220px]"
                       value={cloneSelectId}
-                      onChange={(e) => setCloneSelectId(e.target.value)}
-                      className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
-                    >
-                      <option value="">Choose a tournament to clone...</option>
-                      {existingTournaments.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name} ({t.gameName})
-                        </option>
-                      ))}
-                    </select>
+                      onChange={setCloneSelectId}
+                      placeholder="Choose a tournament to clone..."
+                      searchPlaceholder="Search tournaments..."
+                      options={[
+                        { value: "", label: "Choose a tournament to clone..." },
+                        ...existingTournaments.map((t) => ({
+                          value: t.id,
+                          label: t.name,
+                          badge: t.gameName,
+                        })),
+                      ]}
+                    />
                     <button
                       type="button"
                       disabled={!cloneSelectId}
@@ -759,22 +763,18 @@ function WizardInner() {
                     Quick-add game
                   </button>
                 </div>
-                <select
+                <CustomSelect
                   value={gameId}
-                  onChange={(e) => setGameId(e.target.value)}
+                  onChange={setGameId}
                   disabled={loadingMeta}
-                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none"
-                >
-                  {games.length === 0 ? (
-                    <option value="">No games yet — click Quick-add game</option>
-                  ) : (
-                    games.map((g) => (
-                      <option key={g.id} value={g.id}>
-                        {g.name}
-                      </option>
-                    ))
-                  )}
-                </select>
+                  placeholder="No games yet — click Quick-add game"
+                  searchPlaceholder="Search games..."
+                  options={
+                    games.length === 0
+                      ? [{ value: "", label: "No games yet — click Quick-add game" }]
+                      : games.map((g) => ({ value: g.id, label: g.name }))
+                  }
+                />
               </div>
             </div>
 
@@ -929,21 +929,14 @@ function WizardInner() {
                   <label className="mb-1.5 block text-xs font-bold text-slate-200">
                     Scoring Model
                   </label>
-                  <select
+                  <CustomSelect
                     value={scoring}
-                    onChange={(e) =>
-                      setScoring(e.target.value as TournamentScoring)
-                    }
-                    className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none"
-                  >
-                    {(Object.keys(SCORING_LABELS) as TournamentScoring[]).map(
-                      (sc) => (
-                        <option key={sc} value={sc}>
-                          {SCORING_LABELS[sc]}
-                        </option>
-                      )
+                    onChange={(val) => setScoring(val as TournamentScoring)}
+                    searchable={false}
+                    options={(Object.keys(SCORING_LABELS) as TournamentScoring[]).map(
+                      (sc) => ({ value: sc, label: SCORING_LABELS[sc] })
                     )}
-                  </select>
+                  />
                 </div>
 
                 {format === "series" && (
@@ -951,17 +944,16 @@ function WizardInner() {
                     <label className="mb-1.5 block text-xs font-bold text-slate-200">
                       Best-Of Series (Odd)
                     </label>
-                    <select
-                      value={seriesBestOf}
-                      onChange={(e) => setSeriesBestOf(Number(e.target.value))}
-                      className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none"
-                    >
-                      {[1, 3, 5, 7, 9].map((n) => (
-                        <option key={n} value={n}>
-                          Best of {n} (First to {Math.floor(n / 2) + 1})
-                        </option>
-                      ))}
-                    </select>
+                    <CustomSelect
+                      value={String(seriesBestOf)}
+                      onChange={(val) => setSeriesBestOf(Number(val))}
+                      searchable={false}
+                      options={[1, 3, 5, 7, 9].map((n) => ({
+                        value: String(n),
+                        label: `Best of ${n}`,
+                        badge: `First to ${Math.floor(n / 2) + 1}`,
+                      }))}
+                    />
                   </div>
                 )}
 
@@ -1066,17 +1058,16 @@ function WizardInner() {
                       <label className="mb-1 block text-[11px] font-bold text-slate-300">
                         Team Power Calculation
                       </label>
-                      <select
+                      <CustomSelect
                         value={teamPowerRule}
-                        onChange={(e) =>
-                          setTeamPowerRule(e.target.value as TeamPowerRule)
-                        }
-                        className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-white"
-                      >
-                        <option value="average">Squad Average SP</option>
-                        <option value="all_members">All Members Must Fit Tier</option>
-                        <option value="captain">Captain&apos;s SP Only</option>
-                      </select>
+                        onChange={(val) => setTeamPowerRule(val as TeamPowerRule)}
+                        searchable={false}
+                        options={[
+                          { value: "average", label: "Squad Average SP" },
+                          { value: "all_members", label: "All Members Must Fit Tier" },
+                          { value: "captain", label: "Captain's SP Only" },
+                        ]}
+                      />
                     </div>
                   </div>
 

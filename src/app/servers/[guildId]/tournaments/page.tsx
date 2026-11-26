@@ -14,6 +14,7 @@ import {
   Trophy,
   User,
 } from "lucide-react";
+import { CustomSelect } from "@/components/CustomSelect";
 import { ServerGuard } from "@/components/ServerGuard";
 import { TournamentCard } from "@/components/TournamentCard";
 import { useWorkspace } from "@/components/WorkspaceContext";
@@ -145,39 +146,41 @@ export default function ServerTournamentsPage() {
                   className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2 pl-9 pr-3 text-xs text-white placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none"
                 />
               </div>
-              <select
+              <CustomSelect
                 value={status}
-                onChange={(e) => setStatus(e.target.value)}
-                className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
-              >
-                <option value="all">All Active Statuses</option>
-                {(Object.keys(STATUS_META) as TournamentStatus[]).map((s) => (
-                  <option key={s} value={s}>
-                    {STATUS_META[s].label}
-                  </option>
-                ))}
-              </select>
-              <select
+                onChange={setStatus}
+                options={[
+                  { value: "all", label: "All Active Statuses" },
+                  ...(Object.keys(STATUS_META) as TournamentStatus[]).map((s) => ({
+                    value: s,
+                    label: STATUS_META[s].label,
+                    dotColor: STATUS_META[s].color,
+                  })),
+                ]}
+                searchable={false}
+              />
+              <CustomSelect
                 value={format}
-                onChange={(e) => setFormat(e.target.value)}
-                className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
-              >
-                <option value="all">All Formats</option>
-                {(Object.keys(FORMAT_LABELS) as TournamentFormat[]).map((f) => (
-                  <option key={f} value={f}>
-                    {FORMAT_LABELS[f]}
-                  </option>
-                ))}
-              </select>
-              <select
+                onChange={setFormat}
+                options={[
+                  { value: "all", label: "All Formats" },
+                  ...(Object.keys(FORMAT_LABELS) as TournamentFormat[]).map((f) => ({
+                    value: f,
+                    label: FORMAT_LABELS[f],
+                  })),
+                ]}
+                searchable={false}
+              />
+              <CustomSelect
                 value={mode}
-                onChange={(e) => setMode(e.target.value)}
-                className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
-              >
-                <option value="all">Solo &amp; Team Modes</option>
-                <option value="individual">Solo / Individual</option>
-                <option value="team">Team / Squad</option>
-              </select>
+                onChange={setMode}
+                options={[
+                  { value: "all", label: "Solo & Team Modes" },
+                  { value: "individual", label: "Solo / Individual" },
+                  { value: "team", label: "Team / Squad" },
+                ]}
+                searchable={false}
+              />
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/80 pt-3 text-xs">

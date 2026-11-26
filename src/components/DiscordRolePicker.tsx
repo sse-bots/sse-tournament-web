@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Hash, Plus, Search, Shield, X } from "lucide-react";
 import type { GuildChannelInfo, GuildRoleInfo } from "@/lib/tournament-types";
+import { CustomSelect, type CustomSelectOption } from "@/components/CustomSelect";
 
 export function DiscordRoleMultiPicker({
   roles,
@@ -24,6 +25,7 @@ export function DiscordRoleMultiPicker({
   const [search, setSearch] = useState("");
   const [manualId, setManualId] = useState("");
   const [open, setOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const roleMap = useMemo(
     () => new Map(roles.map((r) => [r.id, r])),
@@ -36,6 +38,35 @@ export function DiscordRoleMultiPicker({
       (r) => !q || r.name.toLowerCase().includes(q) || r.id.includes(q)
     );
   }, [roles, search]);
+
+  // Close dropdown automatically when clicking/tapping outside or pressing Escape
+  useEffect(() => {
+    if (!open) return;
+
+    function handleOutside(event: MouseEvent | TouchEvent) {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(event.target as Node)
+      ) {
+        setOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleOutside);
+    document.addEventListener("touchstart", handleOutside, { passive: true });
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      document.removeEventListener("touchstart", handleOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
 
   function toggleRole(id: string) {
     if (disabled) return;
@@ -98,13 +129,13 @@ export function DiscordRoleMultiPicker({
         </div>
       )}
 
-      {/* Searchable Dropdown Trigger & List */}
+      {/* Searchable Dropdown Trigger & Popover List */}
       {!disabled && (
         <div className="space-y-2">
           {roles.length > 0 ? (
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/90 p-2">
+            <div ref={dropdownRef} className="relative">
               <div className="relative">
-                <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-500" />
+                <Search className="pointer-events-none absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-500" />
                 <input
                   value={search}
                   onFocus={() => setOpen(true)}
@@ -113,22 +144,32 @@ export function DiscordRoleMultiPicker({
                     setOpen(true);
                   }}
                   placeholder={placeholder}
-                  className="w-full rounded-xl border border-slate-800 bg-slate-900 py-2 pl-8 pr-8 text-xs text-white placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none"
+                  className={`w-full rounded-xl border bg-slate-950 py-2.5 pl-8 pr-8 text-xs text-white placeholder:text-slate-500 focus:outline-none ${
+                    open
+                      ? "border-indigo-500 ring-2 ring-indigo-500/20"
+                      : "border-slate-800 hover:border-slate-700"
+                  }`}
                 />
-                {open && (
+                {(open || search) && (
                   <button
                     type="button"
-                    onClick={() => setOpen(false)}
-                    className="absolute right-2 top-2 rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
-                    title="Collapse list"
+                    onClick={() => {
+                      if (search) {
+                        setSearch("");
+                      } else {
+                        setOpen(false);
+                      }
+                    }}
+                    className="absolute right-2.5 top-2 rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                    title={search ? "Clear search" : "Close list"}
                   >
                     <X className="h-3 w-3" />
                   </button>
                 )}
               </div>
 
-              {(open || search.trim().length > 0) && (
-                <div className="mt-2 max-h-48 space-y-1 overflow-y-auto pr-1">
+              {open && (
+                <div className="absolute left-0 right-0 top-full z-[70] mt-1.5 max-h-56 space-y-1 overflow-y-auto rounded-2xl border border-slate-700/90 bg-[#0b1120] p-1.5 shadow-2xl shadow-black/50">
                   {filtered.length === 0 ? (
                     <div className="py-3 text-center text-[11px] text-slate-500">
                       No matching Discord roles found.
@@ -144,7 +185,7 @@ export function DiscordRoleMultiPicker({
                           className={`flex w-full items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition ${
                             active
                               ? "bg-indigo-600/20 font-bold text-indigo-300"
-                              : "text-slate-200 hover:bg-slate-800/70"
+                              : "text-slate-200 hover:bg-slate-800/80 hover:text-white"
                           }`}
                         >
                           <span className="flex min-w-0 items-center gap-2">
@@ -171,9 +212,9 @@ export function DiscordRoleMultiPicker({
                 Discord roles not synced yet
               </div>
               <p className="mt-1">
-                Ensure <code className="font-mono">bot-v3.py</code> is online in
-                this server to load role names automatically, or enter a Discord
-                Role ID manually below.
+                Ensure the SSE Tournament Bot is online in this server to load
+                role names automatically, or enter a Discord Role ID manually
+                below.
               </p>
             </div>
           )}
@@ -223,7 +264,27 @@ export function DiscordSingleRolePicker({
   emptyLabel?: string;
   disabled?: boolean;
 }) {
-  const hasMatch = !value || roles.some((r) => r.id === value);
+  const options = useMemo<CustomSelectOption[]>(() => {
+    const hasMatch = !value || roles.some((r) => r.id === value);
+    const list: CustomSelectOption[] = [
+      { value: "", label: emptyLabel },
+    ];
+    if (!hasMatch && value) {
+      list.push({
+        value,
+        label: `Custom Role (${value.slice(-6)})`,
+        dotColor: "#94a3b8",
+      });
+    }
+    for (const r of roles) {
+      list.push({
+        value: r.id,
+        label: `@${r.name}`,
+        dotColor: r.color || "#94a3b8",
+      });
+    }
+    return list;
+  }, [roles, value, emptyLabel]);
 
   return (
     <div className="space-y-1.5">
@@ -231,22 +292,16 @@ export function DiscordSingleRolePicker({
         <label className="block text-xs font-bold text-slate-200">{label}</label>
       )}
       {hint && <p className="text-[11px] text-slate-400">{hint}</p>}
-      <select
+      <CustomSelect
         disabled={disabled}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none disabled:opacity-60"
-      >
-        <option value="">{emptyLabel}</option>
-        {!hasMatch && value && (
-          <option value={value}>Custom Role ID ({value})</option>
-        )}
-        {roles.map((r) => (
-          <option key={r.id} value={r.id}>
-            @{r.name}
-          </option>
-        ))}
-      </select>
+        onChange={onChange}
+        options={options}
+        placeholder={emptyLabel}
+        searchPlaceholder="Search Discord roles..."
+        searchable={roles.length > 5}
+        emptyMessage="No matching roles found."
+      />
     </div>
   );
 }
@@ -268,7 +323,28 @@ export function DiscordChannelPicker({
   emptyLabel?: string;
   disabled?: boolean;
 }) {
-  const hasMatch = !value || channels.some((c) => c.id === value);
+  const options = useMemo<CustomSelectOption[]>(() => {
+    const hasMatch = !value || channels.some((c) => c.id === value);
+    const list: CustomSelectOption[] = [
+      { value: "", label: emptyLabel },
+    ];
+    if (!hasMatch && value) {
+      list.push({
+        value,
+        label: `Channel (${value.slice(-6)})`,
+        icon: <Hash className="h-3.5 w-3.5" />,
+      });
+    }
+    for (const ch of channels) {
+      list.push({
+        value: ch.id,
+        label: ch.name,
+        badge: ch.category || undefined,
+        icon: <Hash className="h-3.5 w-3.5" />,
+      });
+    }
+    return list;
+  }, [channels, value, emptyLabel]);
 
   return (
     <div className="space-y-1.5">
@@ -279,23 +355,16 @@ export function DiscordChannelPicker({
         </label>
       )}
       {hint && <p className="text-[11px] text-slate-400">{hint}</p>}
-      <select
+      <CustomSelect
         disabled={disabled}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none disabled:opacity-60"
-      >
-        <option value="">{emptyLabel}</option>
-        {!hasMatch && value && (
-          <option value={value}>Channel ID ({value})</option>
-        )}
-        {channels.map((ch) => (
-          <option key={ch.id} value={ch.id}>
-            #{ch.name}
-            {ch.category ? ` (${ch.category})` : ""}
-          </option>
-        ))}
-      </select>
+        onChange={onChange}
+        options={options}
+        placeholder={emptyLabel}
+        searchPlaceholder="Search Discord channels..."
+        searchable={channels.length > 5}
+        emptyMessage="No matching channels found."
+      />
     </div>
   );
 }
