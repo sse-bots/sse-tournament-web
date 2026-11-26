@@ -21,7 +21,9 @@ import {
   UserCheck,
   Users,
 } from "lucide-react";
+import { AnnouncementComposer } from "@/components/AnnouncementComposer";
 import { CopyButton } from "@/components/CopyButton";
+import { CustomSelect } from "@/components/CustomSelect";
 import { DiscordChannelPicker } from "@/components/DiscordRolePicker";
 import { useTournamentDetail } from "@/components/TournamentDetailContext";
 import {
@@ -45,6 +47,7 @@ export default function TournamentOverviewPage() {
     access,
     myRegistration,
     myMatches,
+    discordRoles,
     discordChannels,
   } = data;
 
@@ -249,7 +252,7 @@ export default function TournamentOverviewPage() {
                               Week {m.weekNumber}
                             </span>
                             <span className="font-mono text-xs font-bold text-slate-300">
-                              Match #{m.matchNumber}
+                              Match #{m.weekMatchNumber}
                             </span>
                             <span
                               className="sse-status-pill rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase"
@@ -517,18 +520,23 @@ export default function TournamentOverviewPage() {
                     <label className="mb-1.5 block text-xs font-bold text-slate-200">
                       Announcement Target
                     </label>
-                    <select
+                    <CustomSelect
                       value={announceTarget}
-                      onChange={(e) => setAnnounceTarget(e.target.value)}
-                      className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none"
-                    >
-                      <option value="server">Server Announcement Channel</option>
-                      {t.weeks.map((wk) => (
-                        <option key={wk.weekNumber} value={`week:${wk.weekNumber}`}>
-                          Week {wk.weekNumber} Forum (Locked Announcements)
-                        </option>
-                      ))}
-                    </select>
+                      onChange={setAnnounceTarget}
+                      searchable={false}
+                      options={[
+                        {
+                          value: "server",
+                          label: "Server Announcement Channel",
+                          description: "Post directly to a server text channel",
+                        },
+                        ...t.weeks.map((wk) => ({
+                          value: `week:${wk.weekNumber}`,
+                          label: `Week ${wk.weekNumber} Forum`,
+                          badge: "Locked Announcements",
+                        })),
+                      ]}
+                    />
                   </div>
 
                   {announceTarget === "server" && (
@@ -564,15 +572,21 @@ export default function TournamentOverviewPage() {
                   </div>
                 )}
 
-                <textarea
-                  rows={3}
-                  required
-                  minLength={2}
-                  maxLength={3800}
+                <AnnouncementComposer
                   value={announceMsg}
-                  onChange={(e) => setAnnounceMsg(e.target.value)}
-                  placeholder="Write your announcement message..."
-                  className="w-full rounded-2xl border border-slate-800 bg-slate-950 p-3 text-xs text-white placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none"
+                  onChange={setAnnounceMsg}
+                  roles={discordRoles}
+                  channels={discordChannels}
+                  tournamentName={t.name}
+                  weekNumber={
+                    announceTarget.startsWith("week:")
+                      ? Number(announceTarget.replace("week:", ""))
+                      : null
+                  }
+                  required
+                  disabled={busy}
+                  rows={4}
+                  placeholder="Write your announcement... Type @ to mention Discord roles or use Bold, Italic, Headings above"
                 />
 
                 <div className="flex justify-end">

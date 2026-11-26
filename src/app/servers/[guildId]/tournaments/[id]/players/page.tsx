@@ -16,6 +16,7 @@ import {
   XCircle,
   Lock,
 } from "lucide-react";
+import { CustomSelect } from "@/components/CustomSelect";
 import { useTournamentDetail } from "@/components/TournamentDetailContext";
 import type { RegistrationRow } from "@/lib/tournament-types";
 
@@ -461,17 +462,17 @@ export default function TournamentPlayersPage() {
                 <label className="mb-1 block text-xs font-bold text-slate-200">
                   Destination Bracket
                 </label>
-                <select
+                <CustomSelect
                   value={targetBracketId}
-                  onChange={(e) => setTargetBracketId(e.target.value)}
-                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
-                >
-                  {t.brackets.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name} ({b.minPower} – {b.maxPower ?? "∞"} SP)
-                    </option>
-                  ))}
-                </select>
+                  onChange={setTargetBracketId}
+                  searchable={t.brackets.length > 6}
+                  placeholder="Select destination bracket..."
+                  options={t.brackets.map((b) => ({
+                    value: b.id,
+                    label: b.name,
+                    badge: `${b.minPower} – ${b.maxPower ?? "∞"} SP`,
+                  }))}
+                />
               </div>
             )}
 

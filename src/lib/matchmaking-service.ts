@@ -245,6 +245,7 @@ export async function generateWeekMatches(
     .limit(1)
     .next();
   let matchNo = Number(lastNumDoc?.matchNumber ?? 0) + 1;
+  let weekMatchNo = 1;
 
   const mapPool =
     Array.isArray(t.maps) && t.maps.length > 0
@@ -262,12 +263,13 @@ export async function generateWeekMatches(
     seriesId: string | null,
     seriesBestOf: number | null
   ) => {
-    const mapName = mapPool[(matchNo - 1) % mapPool.length];
+    const mapName = mapPool[(weekMatchNo - 1) % mapPool.length];
     if (!b) {
       docsToInsert.push({
         guildId,
         tournamentId: tid,
         matchNumber: matchNo,
+        weekMatchNumber: weekMatchNo,
         weekNumber: targetWeek,
         roundNumber: roundNo,
         bracketId: a.bracketId,
@@ -301,6 +303,7 @@ export async function generateWeekMatches(
         guildId,
         tournamentId: tid,
         matchNumber: matchNo,
+        weekMatchNumber: weekMatchNo,
         weekNumber: targetWeek,
         roundNumber: roundNo,
         bracketId: a.bracketId,
@@ -324,6 +327,7 @@ export async function generateWeekMatches(
       });
     }
     matchNo += 1;
+    weekMatchNo += 1;
   };
 
   for (const group of groups) {

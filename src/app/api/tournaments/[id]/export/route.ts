@@ -77,11 +77,16 @@ export async function GET(
       r.squadPowerStatus || "",
     ]);
   }
+  const exportWeekCounters = new Map<number, number>();
   for (const m of matchDocs) {
+    const wk = Number(m.weekNumber ?? m.roundNumber ?? 1);
+    const seq = (exportWeekCounters.get(wk) || 0) + 1;
+    exportWeekCounters.set(wk, seq);
+    const wMatchNo = Number(m.weekMatchNumber ?? 0) >= 1 ? Number(m.weekMatchNumber) : seq;
     pushRow([
       "MATCH",
       String(m._id),
-      `week-${m.weekNumber ?? 1}-match-${m.matchNumber}`,
+      `week-${wk}-match-${wMatchNo}`,
       m.status,
       m.sideALabel || "",
       m.sideBLabel || "",

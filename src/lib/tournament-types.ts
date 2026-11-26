@@ -258,6 +258,7 @@ export interface TeamRow {
 export interface MatchRow {
   id: string;
   matchNumber: number;
+  weekMatchNumber: number;
   weekNumber: number;
   roundNumber: number;
   bracketId: string | null;

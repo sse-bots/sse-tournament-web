@@ -15,6 +15,8 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
+import { ConfirmModal } from "@/components/ConfirmModal";
+import { CustomSelect } from "@/components/CustomSelect";
 import {
   DiscordChannelPicker,
   DiscordRoleMultiPicker,
@@ -64,6 +66,13 @@ export default function TournamentSettingsPage() {
   const [bMax, setBMax] = useState("");
 
   const [deleting, setDeleting] = useState(false);
+  const [confirmState, setConfirmState] = useState<
+    | null
+    | { kind: "delete_tournament" }
+    | { kind: "cancel_tournament" }
+    | { kind: "archive_tournament" }
+    | { kind: "delete_bracket"; bracketName: string }
+  >(null);
 
   const t = data?.tournament;
   const access = data?.access;
@@ -185,14 +194,7 @@ export default function TournamentSettingsPage() {
     }
   }
 
-  async function handleDeleteTournament() {
-    if (
-      !confirm(
-        `Permanently delete "${t!.name}" and all its registrations, teams, and match records? This cannot be undone.`
-      )
-    ) {
-      return;
-    }
+  async function executeDeleteTournament() {
     setDeleting(true);
     setError(null);
     try {
@@ -205,10 +207,43 @@ export default function TournamentSettingsPage() {
         setError(j.error || "Could not delete tournament.");
         return;
       }
+      setConfirmState(null);
       showToast("Tournament deleted.");
       router.push(`/servers/${guildId}/tournaments`);
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function handleConfirmModalAction(inputVal: string) {
+    if (!confirmState) return;
+    if (confirmState.kind === "delete_tournament") {
+      await executeDeleteTournament();
+      return;
+    }
+    if (confirmState.kind === "cancel_tournament") {
+      if (!inputVal.trim()) return;
+      const res = await runAction(
+        { action: "cancel", reason: inputVal.trim() },
+        "Tournament cancelled."
+      );
+      if (res.ok) setConfirmState(null);
+      return;
+    }
+    if (confirmState.kind === "archive_tournament") {
+      const res = await runAction(
+        { action: "archive" },
+        "Tournament archived."
+      );
+      if (res.ok) setConfirmState(null);
+      return;
+    }
+    if (confirmState.kind === "delete_bracket") {
+      const res = await runAction(
+        { action: "delete_bracket", bracketName: confirmState.bracketName },
+        `Removed bracket "${confirmState.bracketName}".`
+      );
+      if (res.ok) setConfirmState(null);
     }
   }
 
@@ -352,18 +387,15 @@ export default function TournamentSettingsPage() {
             <label className="mb-1 block text-xs font-bold text-slate-200">
               Scoring Model
             </label>
-            <select
+            <CustomSelect
               disabled={t.settingsLocked || !access.canManageTournament}
               value={scoring}
-              onChange={(e) => setScoring(e.target.value as TournamentScoring)}
-              className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white disabled:opacity-60"
-            >
-              {(Object.keys(SCORING_LABELS) as TournamentScoring[]).map((sc) => (
-                <option key={sc} value={sc}>
-                  {SCORING_LABELS[sc]}
-                </option>
-              ))}
-            </select>
+              onChange={(val) => setScoring(val as TournamentScoring)}
+              searchable={false}
+              options={(Object.keys(SCORING_LABELS) as TournamentScoring[]).map(
+                (sc) => ({ value: sc, label: SCORING_LABELS[sc] })
+              )}
+            />
           </div>
         </div>
 
@@ -570,10 +602,10 @@ export default function TournamentSettingsPage() {
                       type="button"
                       disabled={busy}
                       onClick={() =>
-                        runAction(
-                          { action: "delete_bracket", bracketName: b.name },
-                          `Removed bracket "${b.name}".`
-                        )
+                        setConfirmState({
+                          kind: "delete_bracket",
+                          bracketName: b.name,
+                        })
                       }
                       className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-500/15 hover:text-rose-300"
                     >
@@ -670,14 +702,7 @@ export default function TournamentSettingsPage() {
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => {
-                  const reason = window.prompt("Reason for cancelling this tournament?") || "";
-                  if (!reason.trim()) return;
-                  runAction(
-                    { action: "cancel", reason: reason.trim() },
-                    "Tournament cancelled."
-                  );
-                }}
+                onClick={() => setConfirmState({ kind: "cancel_tournament" })}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-4 py-2 text-xs font-bold text-amber-300"
               >
                 <XCircle className="h-3.5 w-3.5" />
@@ -690,9 +715,7 @@ export default function TournamentSettingsPage() {
               <button
                 type="button"
                 disabled={busy}
-                onClick={() =>
-                  runAction({ action: "archive" }, "Tournament archived.")
-                }
+                onClick={() => setConfirmState({ kind: "archive_tournament" })}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-bold text-slate-200 hover:border-indigo-500"
               >
                 <Archive className="h-3.5 w-3.5" />
@@ -704,7 +727,7 @@ export default function TournamentSettingsPage() {
             <button
               type="button"
               disabled={deleting}
-              onClick={handleDeleteTournament}
+              onClick={() => setConfirmState({ kind: "delete_tournament" })}
               className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-extrabold text-white hover:bg-rose-500 disabled:opacity-50"
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -713,6 +736,58 @@ export default function TournamentSettingsPage() {
           )}
         </div>
       </section>
+          <ConfirmModal
+        open={Boolean(confirmState)}
+        title={
+          confirmState?.kind === "delete_tournament"
+            ? `Delete "${t.name}" Permanently?`
+            : confirmState?.kind === "cancel_tournament"
+              ? `Cancel "${t.name}"?`
+              : confirmState?.kind === "archive_tournament"
+                ? `Archive "${t.name}"?`
+                : confirmState?.kind === "delete_bracket"
+                  ? `Delete Bracket "${confirmState.bracketName}"?`
+                  : "Confirm Action"
+        }
+        description={
+          confirmState?.kind === "delete_tournament"
+            ? "This permanently removes the tournament along with all registrations, teams, and match records. This action cannot be undone."
+            : confirmState?.kind === "cancel_tournament"
+              ? "All players will be notified in Discord and this tournament will be marked as cancelled."
+              : confirmState?.kind === "archive_tournament"
+                ? "Archived tournaments are hidden from the active server list while keeping their records in MongoDB."
+                : "This power bracket will be removed from the tournament configuration."
+        }
+        confirmLabel={
+          confirmState?.kind === "delete_tournament"
+            ? deleting
+              ? "Deleting..."
+              : "Delete Permanently"
+            : confirmState?.kind === "cancel_tournament"
+              ? "Cancel Tournament"
+              : confirmState?.kind === "archive_tournament"
+                ? "Archive Tournament"
+                : "Delete Bracket"
+        }
+        variant={
+          confirmState?.kind === "delete_tournament" ||
+          confirmState?.kind === "delete_bracket"
+            ? "danger"
+            : confirmState?.kind === "cancel_tournament"
+              ? "warning"
+              : "primary"
+        }
+        inputLabel={
+          confirmState?.kind === "cancel_tournament"
+            ? "Cancellation Reason"
+            : undefined
+        }
+        inputPlaceholder="Explain why this tournament is being cancelled..."
+        inputRequired={confirmState?.kind === "cancel_tournament"}
+        busy={busy || deleting}
+        onClose={() => setConfirmState(null)}
+        onConfirm={handleConfirmModalAction}
+      />
     </div>
   );
 }
