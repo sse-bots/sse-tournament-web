@@ -12,6 +12,7 @@ const createMatchSchema = z.object({
   sideBId: z.string().trim().min(1),
   mapName: z.string().trim().max(80).optional().default(""),
   bracketId: z.string().trim().optional().nullable(),
+  weekNumber: z.number().int().min(1).max(52).optional(),
   roundNumber: z.number().int().min(1).max(30).optional().default(1),
   scheduledAt: z.string().trim().optional().nullable(),
 });
@@ -65,6 +66,8 @@ export async function POST(
   let sideBUserIds: string[] = [];
   let sideATeamId = null;
   let sideBTeamId = null;
+  let sideALabel = "";
+  let sideBLabel = "";
 
   if (t.mode === "team") {
     const [tmA, tmB] = await Promise.all([
@@ -78,6 +81,8 @@ export async function POST(
     sideBUserIds = Array.isArray(tmB.memberIds) ? tmB.memberIds.map(String) : [];
     sideATeamId = tmA._id;
     sideBTeamId = tmB._id;
+    sideALabel = String(tmA.name || "Team A");
+    sideBLabel = String(tmB.name || "Team B");
   } else {
     const [regA, regB] = await Promise.all([
       registrations.findOne({ tournamentId: tid, userId: d.sideAId, status: "registered" }),
@@ -88,6 +93,8 @@ export async function POST(
     }
     sideAUserIds = [String(regA.userId)];
     sideBUserIds = [String(regB.userId)];
+    sideALabel = String(regA.inGameId || regA.discordDisplayName || regA.discordUsername || `Player #${String(regA.userId).slice(-4)}`);
+    sideBLabel = String(regB.inGameId || regB.discordDisplayName || regB.discordUsername || `Player #${String(regB.userId).slice(-4)}`);
   }
 
   const lastDoc = await matches
@@ -96,6 +103,11 @@ export async function POST(
     .limit(1)
     .next();
   const nextNumber = Number(lastDoc?.matchNumber ?? 0) + 1;
+
+  const existingWeeks = Array.isArray(t.weeks)
+    ? (t.weeks as Array<Record<string, unknown>>).map((w) => Number(w.weekNumber ?? 0))
+    : [];
+  const weekNumber = d.weekNumber || Math.max(1, ...existingWeeks, Number(lastDoc?.weekNumber ?? 1));
 
   const maps = Array.isArray(t.maps) && t.maps.length > 0 ? t.maps.map(String) : ["To be announced"];
   const mapName = d.mapName || maps[(nextNumber - 1) % maps.length];
@@ -111,17 +123,21 @@ export async function POST(
     guildId: String(t.guildId),
     tournamentId: tid,
     matchNumber: nextNumber,
+    weekNumber,
     bracketId: bracketObjId,
     sideAUserIds,
     sideBUserIds,
     sideATeamId,
     sideBTeamId,
+    sideALabel,
+    sideBLabel,
     sideAPower: 0,
     sideBPower: 0,
     mapName,
     format: String(t.format),
     roundNumber: d.roundNumber,
     status: "scheduled",
+    forumTag: "pending",
     createdAt: now,
   };
 
@@ -135,16 +151,41 @@ export async function POST(
   }
 
   const inserted = await matches.insertOne(doc);
+
+  if (!existingWeeks.includes(weekNumber)) {
+    await tournaments.updateOne(
+      { _id: tid },
+      {
+        $push: {
+          weeks: {
+            weekNumber,
+            status: "open",
+            forumChannelId: null,
+            forumUrl: null,
+            announcementThreadId: null,
+            announcementThreadUrl: null,
+            isForum: true,
+            tagIds: {},
+            createdAt: now,
+          },
+        } as never,
+      }
+    );
+  }
+
   await writeAuditLog({
     guildId: String(t.guildId),
     actorId: session.user.discordId || session.user.sub,
     action: "match.web_create",
     targetType: "Match",
     targetId: String(inserted.insertedId),
-    details: { matchNumber: nextNumber, mapName },
+    details: { matchNumber: nextNumber, weekNumber, sideALabel, sideBLabel, mapName },
   });
 
-  return NextResponse.json({ ok: true, id: String(inserted.insertedId), matchNumber: nextNumber }, { status: 201 });
+  return NextResponse.json(
+    { ok: true, id: String(inserted.insertedId), matchNumber: nextNumber, weekNumber },
+    { status: 201 }
+  );
 }
 
 export async function PATCH(req: Request, context: { params: Promise<{ id: string }> }) {
@@ -189,6 +230,13 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
     return NextResponse.json({ error: "You cannot review your own match." }, { status: 403 });
   }
 
+  const sideLabel = (side: "A" | "B" | "DRAW") =>
+    side === "DRAW"
+      ? "Draw"
+      : side === "A"
+        ? String(m.sideALabel || "Side A")
+        : String(m.sideBLabel || "Side B");
+
   async function applyScore(side: "A" | "B" | "DRAW", delta: 1 | -1) {
     if (side === "DRAW") {
       for (const uid of [...sideAIds, ...sideBIds]) {
@@ -211,38 +259,96 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
     const finalSide = (winnerSide || m.reportedWinnerSide || "A") as "A" | "B" | "DRAW";
     const winnerIds = finalSide === "A" ? sideAIds : finalSide === "B" ? sideBIds : [];
     const winnerTeam = finalSide === "A" ? m.sideATeamId : finalSide === "B" ? m.sideBTeamId : null;
-    await matches.updateOne({ _id: mid }, { $set: { status: "approved", reportedWinnerSide: finalSide, approvedWinnerUserId: winnerIds[0] || null, approvedWinnerTeamId: winnerTeam || null, reviewedBy: actorId, reviewedAt: now, reviewNote: note } });
+    await matches.updateOne(
+      { _id: mid },
+      {
+        $set: {
+          status: "approved",
+          forumTag: "declared",
+          reportedWinnerSide: finalSide,
+          reportedWinnerLabel: sideLabel(finalSide),
+          approvedWinnerUserId: winnerIds[0] || null,
+          approvedWinnerTeamId: winnerTeam || null,
+          reviewedBy: actorId,
+          reviewedAt: now,
+          reviewNote: note,
+        },
+      }
+    );
     if (!m.seriesId) await applyScore(finalSide, 1);
-    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "match.approve", targetType: "Match", targetId: String(mid), details: { winnerSide: finalSide, note } });
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "match.approve", targetType: "Match", targetId: String(mid), details: { winnerSide: finalSide, winnerLabel: sideLabel(finalSide), note } });
     return NextResponse.json({ ok: true });
   }
 
   if (action === "reject" || action === "dispute") {
-    await matches.updateOne({ _id: mid }, { $set: { status: action === "reject" ? "rejected" : "disputed", reviewedBy: actorId, reviewedAt: now, reviewNote: note } });
+    await matches.updateOne(
+      { _id: mid },
+      {
+        $set: {
+          status: action === "reject" ? "rejected" : "disputed",
+          forumTag: "issue",
+          reviewedBy: actorId,
+          reviewedAt: now,
+          reviewNote: note,
+        },
+      }
+    );
     await writeAuditLog({ guildId: String(t.guildId), actorId, action: `match.${action}`, targetType: "Match", targetId: String(mid), details: { note } });
     return NextResponse.json({ ok: true });
   }
 
   if (action === "forfeit") {
-    if (!winnerSide || winnerSide === "DRAW") return NextResponse.json({ error: "Select Side A or B." }, { status: 400 });
+    if (!winnerSide || winnerSide === "DRAW") return NextResponse.json({ error: "Select the winning player or team." }, { status: 400 });
     if (["approved", "forfeited", "cancelled"].includes(String(m.status))) return NextResponse.json({ error: "Match already finalized." }, { status: 400 });
     const winnerIds = winnerSide === "A" ? sideAIds : sideBIds;
     const winnerTeam = winnerSide === "A" ? m.sideATeamId : m.sideBTeamId;
-    await matches.updateOne({ _id: mid }, { $set: { status: "forfeited", reportedWinnerSide: winnerSide, reportedWinnerUserId: winnerIds[0] || null, reportedWinnerTeamId: winnerTeam || null, reviewedBy: actorId, reviewedAt: now, forfeitReason: note } });
+    await matches.updateOne(
+      { _id: mid },
+      {
+        $set: {
+          status: "forfeited",
+          forumTag: "declared",
+          reportedWinnerSide: winnerSide,
+          reportedWinnerLabel: sideLabel(winnerSide),
+          reportedWinnerUserId: winnerIds[0] || null,
+          reportedWinnerTeamId: winnerTeam || null,
+          reviewedBy: actorId,
+          reviewedAt: now,
+          forfeitReason: note,
+        },
+      }
+    );
     if (!m.seriesId) await applyScore(winnerSide, 1);
-    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "match.forfeit", targetType: "Match", targetId: String(mid), details: { winnerSide, reason: note } });
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "match.forfeit", targetType: "Match", targetId: String(mid), details: { winnerSide, winnerLabel: sideLabel(winnerSide), reason: note } });
     return NextResponse.json({ ok: true });
   }
 
   if (action === "override") {
-    if (!winnerSide || winnerSide === "DRAW") return NextResponse.json({ error: "Select Side A or B." }, { status: 400 });
+    if (!winnerSide || winnerSide === "DRAW") return NextResponse.json({ error: "Select the winning player or team." }, { status: 400 });
     if (m.seriesId) return NextResponse.json({ error: "Series matches must be resolved via /match series-resolve in Discord." }, { status: 400 });
     const oldSide = m.reportedWinnerSide as "A" | "B" | "DRAW" | undefined;
     if (["approved", "forfeited"].includes(String(m.status)) && oldSide) await applyScore(oldSide, -1);
     await applyScore(winnerSide, 1);
     const winnerIds = winnerSide === "A" ? sideAIds : sideBIds;
-    await matches.updateOne({ _id: mid }, { $set: { status: "approved", reportedWinnerSide: winnerSide, approvedWinnerUserId: winnerIds[0] || null, approvedWinnerTeamId: (winnerSide === "A" ? m.sideATeamId : m.sideBTeamId) || null, overrideBy: actorId, overrideAt: now, overrideReason: note, reviewedBy: actorId, reviewedAt: now } });
-    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "match.override", targetType: "Match", targetId: String(mid), details: { from: oldSide || null, to: winnerSide, reason: note } });
+    await matches.updateOne(
+      { _id: mid },
+      {
+        $set: {
+          status: "approved",
+          forumTag: "declared",
+          reportedWinnerSide: winnerSide,
+          reportedWinnerLabel: sideLabel(winnerSide),
+          approvedWinnerUserId: winnerIds[0] || null,
+          approvedWinnerTeamId: (winnerSide === "A" ? m.sideATeamId : m.sideBTeamId) || null,
+          overrideBy: actorId,
+          overrideAt: now,
+          overrideReason: note,
+          reviewedBy: actorId,
+          reviewedAt: now,
+        },
+      }
+    );
+    await writeAuditLog({ guildId: String(t.guildId), actorId, action: "match.override", targetType: "Match", targetId: String(mid), details: { from: oldSide || null, to: winnerSide, winnerLabel: sideLabel(winnerSide), reason: note } });
     return NextResponse.json({ ok: true });
   }
 

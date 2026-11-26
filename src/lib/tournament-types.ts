@@ -30,6 +30,8 @@ export type TeamPowerRule = "average" | "all_members" | "captain";
 
 export type ServerAccessRole = "owner" | "moderator" | "member";
 
+export type MatchForumTag = "pending" | "submitted" | "issue" | "declared";
+
 export interface GuildRoleInfo {
   id: string;
   name: string;
@@ -41,6 +43,25 @@ export interface GuildChannelInfo {
   id: string;
   name: string;
   category: string | null;
+}
+
+export interface TournamentWeekInfo {
+  weekNumber: number;
+  status: "open" | "closed";
+  forumChannelId: string | null;
+  forumUrl: string | null;
+  announcementThreadId: string | null;
+  announcementThreadUrl: string | null;
+  isForum: boolean;
+  createdAt: string | null;
+  closedAt: string | null;
+}
+
+export interface WebSyncStatus {
+  action: string;
+  ok: boolean;
+  message: string;
+  at: string | null;
 }
 
 export interface ServerAccessContext {
@@ -145,6 +166,8 @@ export interface TournamentSummary {
   scoring: TournamentScoring;
   bracketsEnabled: boolean;
   brackets: PowerBracket[];
+  weeks: TournamentWeekInfo[];
+  lastWebSync: WebSyncStatus | null;
   teamSizeMin: number;
   teamSizeMax: number;
   teamPowerRule: TeamPowerRule;
@@ -235,6 +258,7 @@ export interface TeamRow {
 export interface MatchRow {
   id: string;
   matchNumber: number;
+  weekNumber: number;
   roundNumber: number;
   bracketId: string | null;
   bracketName: string | null;
@@ -249,11 +273,18 @@ export interface MatchRow {
   mapName: string;
   format: string;
   status: string;
+  forumTag: MatchForumTag | string;
+  forumChannelId: string | null;
+  threadId: string | null;
+  threadUrl: string | null;
   channelId: string | null;
+  channelCreationError?: boolean;
+  channelCreationErrorMsg?: string | null;
   scheduledAt: string | null;
   deadlineAt: string | null;
   proofUrl: string | null;
   reportedWinnerSide: "A" | "B" | "DRAW" | null;
+  reportedWinnerLabel: string | null;
   submittedBy: string | null;
   reviewedBy: string | null;
   reviewNote: string | null;
@@ -366,6 +397,36 @@ export const SCORING_LABELS: Record<TournamentScoring, string> = {
   combined: "Weighted Combined",
 };
 
+export const FORUM_TAG_META: Record<
+  MatchForumTag,
+  { label: string; color: string; lightColor: string; bg: string }
+> = {
+  pending: {
+    label: "Pending",
+    color: "#94a3b8",
+    lightColor: "#475569",
+    bg: "rgba(148, 163, 184, 0.16)",
+  },
+  submitted: {
+    label: "Submitted",
+    color: "#818cf8",
+    lightColor: "#4338ca",
+    bg: "rgba(99, 102, 241, 0.18)",
+  },
+  issue: {
+    label: "Issue",
+    color: "#fb7185",
+    lightColor: "#be123c",
+    bg: "rgba(244, 63, 94, 0.20)",
+  },
+  declared: {
+    label: "Results Declared",
+    color: "#34d399",
+    lightColor: "#047857",
+    bg: "rgba(16, 185, 129, 0.18)",
+  },
+};
+
 export const STATUS_META: Record<
   TournamentStatus,
   { label: string; color: string; lightColor: string; bg: string; pulse?: boolean }
@@ -385,14 +446,14 @@ export const MATCH_STATUS_COLORS: Record<
   string,
   { label: string; color: string; lightColor: string; bg: string }
 > = {
-  scheduled: { label: "Scheduled", color: "#94a3b8", lightColor: "#475569", bg: "rgba(148,163,184,0.16)" },
+  scheduled: { label: "Pending", color: "#94a3b8", lightColor: "#475569", bg: "rgba(148,163,184,0.16)" },
   ready: { label: "Ready", color: "#38bdf8", lightColor: "#0369a1", bg: "rgba(56,189,248,0.16)" },
   in_progress: { label: "In Progress", color: "#fbbf24", lightColor: "#b45309", bg: "rgba(245,158,11,0.18)" },
   pending_proof: { label: "Pending Proof", color: "#fb923c", lightColor: "#c2410c", bg: "rgba(249,115,22,0.16)" },
-  pending_review: { label: "Pending Review", color: "#c084fc", lightColor: "#7e22ce", bg: "rgba(168,85,247,0.18)" },
-  approved: { label: "Approved", color: "#34d399", lightColor: "#047857", bg: "rgba(16,185,129,0.16)" },
-  rejected: { label: "Rejected", color: "#fb7185", lightColor: "#be123c", bg: "rgba(244,63,94,0.16)" },
-  disputed: { label: "Disputed", color: "#f43f5e", lightColor: "#be123c", bg: "rgba(244,63,94,0.22)" },
+  pending_review: { label: "Submitted", color: "#c084fc", lightColor: "#7e22ce", bg: "rgba(168,85,247,0.18)" },
+  approved: { label: "Results Declared", color: "#34d399", lightColor: "#047857", bg: "rgba(16,185,129,0.16)" },
+  rejected: { label: "Issue / Rejected", color: "#fb7185", lightColor: "#be123c", bg: "rgba(244,63,94,0.16)" },
+  disputed: { label: "Issue / Disputed", color: "#f43f5e", lightColor: "#be123c", bg: "rgba(244,63,94,0.22)" },
   forfeited: { label: "Forfeited", color: "#f59e0b", lightColor: "#b45309", bg: "rgba(245,158,11,0.16)" },
   postponed: { label: "Postponed", color: "#94a3b8", lightColor: "#475569", bg: "rgba(148,163,184,0.16)" },
   cancelled: { label: "Cancelled", color: "#94a3b8", lightColor: "#475569", bg: "rgba(100,116,139,0.16)" },

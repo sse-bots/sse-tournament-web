@@ -96,8 +96,8 @@ export default function ServerTournamentsPage() {
                 onClick={load}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-bold text-slate-200 transition hover:border-indigo-500"
               >
-                <RefreshCw className="h-3.5 w-3.5" />
-                Refresh
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                {loading ? "Syncing..." : "Refresh"}
               </button>
               {access.canCreateTournament && (
                 <Link

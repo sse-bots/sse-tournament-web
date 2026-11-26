@@ -26,7 +26,7 @@ import { useWorkspace } from "@/components/WorkspaceContext";
 export default function ServerOverviewPage() {
   const params = useParams<{ guildId: string }>();
   const guildId = decodeURIComponent(params.guildId || "");
-  const { serverData, refreshServer } = useWorkspace();
+  const { serverData, serverLoading, refreshServer } = useWorkspace();
 
   const settings = serverData?.settings;
   const stats = serverData?.stats;
@@ -93,8 +93,8 @@ export default function ServerOverviewPage() {
                   onClick={refreshServer}
                   className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3.5 py-2 text-xs font-bold text-slate-200 transition hover:border-indigo-500"
                 >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  Sync
+                  <RefreshCw className={`h-3.5 w-3.5 ${serverLoading ? "animate-spin" : ""}`} />
+                  {serverLoading ? "Syncing..." : "Sync"}
                 </button>
                 {access.canCreateTournament && (
                   <Link
@@ -226,7 +226,8 @@ export default function ServerOverviewPage() {
               </div>
             )}
 
-          {/* Quick Workspace Navigation Cards */}
+          {/* Quick Workspace Navigation Cards (Staff Only — members go straight to Tournaments below) */}
+          {access.canViewStaffTools && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Link
               href={`/servers/${guildId}/games`}
@@ -332,6 +333,7 @@ export default function ServerOverviewPage() {
               </Link>
             ) : null}
           </div>
+          )}
 
           {/* Owner Setup Helper if Bot Not Online or No Games Yet */}
           {access.isServerOwner && (!settings.botOnline || stats.totalGames === 0) && (

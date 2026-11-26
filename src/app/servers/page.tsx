@@ -169,8 +169,8 @@ export default function ServersPage() {
               onClick={loadServers}
               className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3.5 py-2 text-xs font-bold text-slate-200 transition hover:border-indigo-500"
             >
-              <RefreshCw className="h-3.5 w-3.5" />
-              Refresh Servers
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+              {loading ? "Syncing..." : "Refresh Servers"}
             </button>
             <a
               href={SITE_SETTINGS.links.nexusUrl}
@@ -393,10 +393,10 @@ export default function ServersPage() {
 
                 <div className="mt-4 flex items-center gap-2">
                   <Link
-                    href={`/servers/${s.id}`}
+                    href={s.role === "member" ? `/servers/${s.id}/tournaments` : `/servers/${s.id}`}
                     className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-extrabold text-white shadow-md shadow-indigo-600/20 transition hover:bg-indigo-500"
                   >
-                    Open Server Workspace
+                    {s.role === "member" ? "View Tournaments" : "Open Server Workspace"}
                     <ArrowRight className="h-3.5 w-3.5" />
                   </Link>
                   {s.role === "owner" && !s.botConfigured && (

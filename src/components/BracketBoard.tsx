@@ -1,12 +1,30 @@
 "use client";
 
 import type { CSSProperties } from "react";
-
 import { useMemo, useState } from "react";
-import { Calendar, Crown, Image as ImageIcon, MapPin, Swords, X } from "lucide-react";
-import { MATCH_STATUS_COLORS, type MatchRow, type PowerBracket } from "@/lib/tournament-types";
+import {
+  Calendar,
+  Crown,
+  ExternalLink,
+  Image as ImageIcon,
+  MapPin,
+  Swords,
+  X,
+} from "lucide-react";
+import {
+  FORUM_TAG_META,
+  type MatchForumTag,
+  type MatchRow,
+  type PowerBracket,
+} from "@/lib/tournament-types";
 
-export function BracketBoard({ matches, brackets }: { matches: MatchRow[]; brackets: PowerBracket[] }) {
+export function BracketBoard({
+  matches,
+  brackets,
+}: {
+  matches: MatchRow[];
+  brackets: PowerBracket[];
+}) {
   const [selectedBracket, setSelectedBracket] = useState<string>("all");
   const [proofPreview, setProofPreview] = useState<MatchRow | null>(null);
 
@@ -15,15 +33,19 @@ export function BracketBoard({ matches, brackets }: { matches: MatchRow[]; brack
     return matches.filter((m) => m.bracketId === selectedBracket);
   }, [matches, selectedBracket]);
 
-  const rounds = useMemo(() => {
-    const map = new Map<number, MatchRow[]>();
+  const groups = useMemo(() => {
+    const map = new Map<string, { week: number; round: number; items: MatchRow[] }>();
     for (const m of filtered) {
+      const wk = m.weekNumber || 1;
       const r = m.roundNumber || 1;
-      const list = map.get(r) || [];
-      list.push(m);
-      map.set(r, list);
+      const key = `${wk}:${r}`;
+      const existing = map.get(key) || { week: wk, round: r, items: [] };
+      existing.items.push(m);
+      map.set(key, existing);
     }
-    return Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
+    return Array.from(map.values()).sort(
+      (a, b) => a.week - b.week || a.round - b.round
+    );
   }, [filtered]);
 
   if (matches.length === 0) {
@@ -32,9 +54,9 @@ export function BracketBoard({ matches, brackets }: { matches: MatchRow[]; brack
         <Swords className="mx-auto mb-3 h-10 w-10 text-slate-500" />
         <h3 className="text-sm font-bold text-white">No Matches Generated Yet</h3>
         <p className="mt-1 text-xs text-slate-400">
-          Matches will appear here automatically once a manager runs{" "}
-          <code className="text-indigo-400">/matchmaking</code> or{" "}
-          <code className="text-indigo-400">/match create</code> in Discord.
+          Click <strong className="text-white">Generate Week 1</strong> above or
+          run <code className="text-indigo-400">/matchmaking</code> in Discord
+          to create the Week 1 Forum and match posts.
         </p>
       </div>
     );
@@ -47,7 +69,11 @@ export function BracketBoard({ matches, brackets }: { matches: MatchRow[]; brack
           <button
             type="button"
             onClick={() => setSelectedBracket("all")}
-            className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${selectedBracket === "all" ? "bg-indigo-600 text-white" : "border border-slate-800 bg-slate-900 text-slate-300"}`}
+            className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+              selectedBracket === "all"
+                ? "bg-indigo-600 text-white"
+                : "border border-slate-800 bg-slate-900 text-slate-300"
+            }`}
           >
             All Brackets ({matches.length})
           </button>
@@ -56,7 +82,11 @@ export function BracketBoard({ matches, brackets }: { matches: MatchRow[]; brack
               key={b.id}
               type="button"
               onClick={() => setSelectedBracket(b.id)}
-              className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${selectedBracket === b.id ? "bg-indigo-600 text-white" : "border border-slate-800 bg-slate-900 text-slate-300"}`}
+              className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                selectedBracket === b.id
+                  ? "bg-indigo-600 text-white"
+                  : "border border-slate-800 bg-slate-900 text-slate-300"
+              }`}
             >
               {b.name}
             </button>
@@ -65,67 +95,117 @@ export function BracketBoard({ matches, brackets }: { matches: MatchRow[]; brack
       )}
 
       <div className="flex gap-4 overflow-x-auto pb-3">
-        {rounds.map(([roundNum, roundMatches]) => (
-          <div key={roundNum} className="w-[300px] shrink-0 space-y-3 sm:w-[330px]">
+        {groups.map((grp) => (
+          <div
+            key={`${grp.week}-${grp.round}`}
+            className="w-[310px] shrink-0 space-y-3 sm:w-[340px]"
+          >
             <div className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-900/80 px-4 py-2.5">
-              <span className="text-xs font-extrabold uppercase tracking-wider text-indigo-400">Round {roundNum}</span>
+              <span className="text-xs font-extrabold uppercase tracking-wider text-indigo-400">
+                Week {grp.week}
+                {grp.round !== grp.week ? ` · Round ${grp.round}` : ""}
+              </span>
               <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-bold text-slate-300">
-                {roundMatches.length} match{roundMatches.length === 1 ? "" : "es"}
+                {grp.items.length} match{grp.items.length === 1 ? "" : "es"}
               </span>
             </div>
 
             <div className="space-y-3">
-              {roundMatches.map((m) => {
-                const st = MATCH_STATUS_COLORS[m.status] || MATCH_STATUS_COLORS.scheduled;
-                const aWon = ["approved", "forfeited"].includes(m.status) && m.reportedWinnerSide === "A";
-                const bWon = ["approved", "forfeited"].includes(m.status) && m.reportedWinnerSide === "B";
+              {grp.items.map((m) => {
+                const tagKey = (m.forumTag || "pending") as MatchForumTag;
+                const tagMeta = FORUM_TAG_META[tagKey] || FORUM_TAG_META.pending;
+                const aWon =
+                  ["approved", "forfeited"].includes(m.status) &&
+                  m.reportedWinnerSide === "A";
+                const bWon =
+                  ["approved", "forfeited"].includes(m.status) &&
+                  m.reportedWinnerSide === "B";
 
                 return (
-                  <div key={m.id} className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/75 shadow-md">
+                  <div
+                    key={m.id}
+                    className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/75 shadow-md"
+                  >
                     <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 bg-slate-950/60 px-3.5 py-2">
                       <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-300">
-                        <span className="font-mono text-indigo-400">M{String(m.matchNumber).padStart(3, "0")}</span>
+                        <span className="font-mono text-indigo-400">
+                          Match {m.matchNumber}
+                        </span>
                         {m.seriesIndex && m.seriesBestOf && (
-                          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold text-amber-300">G{m.seriesIndex}/Bo{m.seriesBestOf}</span>
+                          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold text-amber-300">
+                            G{m.seriesIndex}/Bo{m.seriesBestOf}
+                          </span>
                         )}
                         {m.bracketName && (
-                          <span className="truncate rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-300">{m.bracketName}</span>
+                          <span className="truncate rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-300">
+                            {m.bracketName}
+                          </span>
                         )}
                       </div>
                       <span
                         className="sse-status-pill rounded-full px-2 py-0.5 text-[9px] font-extrabold uppercase"
                         style={
                           {
-                            backgroundColor: st.bg,
-                            "--pill-dark": st.color,
-                            "--pill-light": st.lightColor,
+                            backgroundColor: tagMeta.bg,
+                            "--pill-dark": tagMeta.color,
+                            "--pill-light": tagMeta.lightColor,
                           } as CSSProperties
                         }
                       >
-                        {st.label}
+                        {tagMeta.label}
                       </span>
                     </div>
 
                     <div className="divide-y divide-slate-800/70">
-                      <div className={`flex items-center justify-between gap-2 px-3.5 py-2.5 text-xs ${aWon ? "bg-emerald-500/10" : ""}`}>
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-800 font-mono text-[10px] font-bold text-slate-300">A</span>
-                          <span className={`truncate font-bold ${aWon ? "text-emerald-300" : "text-white"}`}>{m.sideALabel}</span>
-                        </div>
+                      <div
+                        className={`flex items-center justify-between gap-2 px-3.5 py-2.5 text-xs ${
+                          aWon ? "bg-emerald-500/10" : ""
+                        }`}
+                      >
+                        <span
+                          className={`truncate font-bold ${
+                            aWon ? "text-emerald-300" : "text-white"
+                          }`}
+                        >
+                          {m.sideALabel}
+                        </span>
                         <div className="flex shrink-0 items-center gap-1.5">
-                          {m.sideAPower > 0 && <span className="font-mono text-[10px] text-slate-400">{Math.round(m.sideAPower)} SP</span>}
-                          {aWon && <Crown className="h-3.5 w-3.5 text-amber-400" />}
+                          {m.sideAPower > 0 && (
+                            <span className="font-mono text-[10px] text-slate-400">
+                              {Math.round(m.sideAPower)} SP
+                            </span>
+                          )}
+                          {aWon && (
+                            <Crown className="h-3.5 w-3.5 text-amber-400" />
+                          )}
                         </div>
                       </div>
 
-                      <div className={`flex items-center justify-between gap-2 px-3.5 py-2.5 text-xs ${bWon ? "bg-emerald-500/10" : ""}`}>
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-800 font-mono text-[10px] font-bold text-slate-300">B</span>
-                          <span className={`truncate font-bold ${m.isBye ? "italic text-slate-500" : bWon ? "text-emerald-300" : "text-white"}`}>{m.sideBLabel}</span>
-                        </div>
+                      <div
+                        className={`flex items-center justify-between gap-2 px-3.5 py-2.5 text-xs ${
+                          bWon ? "bg-emerald-500/10" : ""
+                        }`}
+                      >
+                        <span
+                          className={`truncate font-bold ${
+                            m.isBye
+                              ? "italic text-slate-500"
+                              : bWon
+                                ? "text-emerald-300"
+                                : "text-white"
+                          }`}
+                        >
+                          {m.sideBLabel}
+                        </span>
                         <div className="flex shrink-0 items-center gap-1.5">
-                          {m.sideBPower > 0 && <span className="font-mono text-[10px] text-slate-400">{Math.round(m.sideBPower)} SP</span>}
-                          {bWon && <Crown className="h-3.5 w-3.5 text-amber-400" />}
+                          {m.sideBPower > 0 && (
+                            <span className="font-mono text-[10px] text-slate-400">
+                              {Math.round(m.sideBPower)} SP
+                            </span>
+                          )}
+                          {bWon && (
+                            <Crown className="h-3.5 w-3.5 text-amber-400" />
+                          )}
                         </div>
                       </div>
                     </div>
@@ -139,8 +219,21 @@ export function BracketBoard({ matches, brackets }: { matches: MatchRow[]; brack
                         {m.scheduledAt && (
                           <span className="inline-flex items-center gap-1">
                             <Calendar className="h-3 w-3" />
-                            {new Date(m.scheduledAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
+                            {new Date(m.scheduledAt).toLocaleDateString(
+                              "en-IN",
+                              { day: "numeric", month: "short" }
+                            )}
                           </span>
+                        )}
+                        {m.threadUrl && (
+                          <a
+                            href={m.threadUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-0.5 font-bold text-slate-200 hover:border-indigo-500 hover:text-white"
+                          >
+                            Post <ExternalLink className="h-2.5 w-2.5" />
+                          </a>
                         )}
                         {m.proofUrl && (
                           <button
@@ -162,18 +255,42 @@ export function BracketBoard({ matches, brackets }: { matches: MatchRow[]; brack
       </div>
 
       {proofPreview?.proofUrl && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" onClick={() => setProofPreview(null)}>
-          <div className="w-full max-w-2xl overflow-hidden rounded-3xl border border-slate-700 bg-[#0b1120] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={() => setProofPreview(null)}
+        >
+          <div
+            className="w-full max-w-2xl overflow-hidden rounded-3xl border border-slate-700 bg-[#0b1120] shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3.5">
               <div>
-                <div className="text-sm font-bold text-white">Match #{String(proofPreview.matchNumber).padStart(3, "0")} Proof Evidence</div>
-                <div className="text-[11px] text-slate-400">{proofPreview.sideALabel} vs {proofPreview.sideBLabel} · Reported Winner: {proofPreview.reportedWinnerSide || "—"}</div>
+                <div className="text-sm font-bold text-white">
+                  Match #{proofPreview.matchNumber} Proof Evidence
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  {proofPreview.sideALabel} vs {proofPreview.sideBLabel} ·
+                  Reported Winner:{" "}
+                  <strong className="text-white">
+                    {proofPreview.reportedWinnerLabel || "—"}
+                  </strong>
+                </div>
               </div>
-              <button type="button" onClick={() => setProofPreview(null)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"><X className="h-4 w-4" /></button>
+              <button
+                type="button"
+                onClick={() => setProofPreview(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
             <div className="max-h-[75vh] overflow-auto bg-slate-950 p-4 text-center">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={proofPreview.proofUrl} alt="Match Proof" className="mx-auto max-h-[65vh] rounded-2xl object-contain" />
+              <img
+                src={proofPreview.proofUrl}
+                alt="Match Proof"
+                className="mx-auto max-h-[65vh] rounded-2xl object-contain"
+              />
             </div>
           </div>
         </div>

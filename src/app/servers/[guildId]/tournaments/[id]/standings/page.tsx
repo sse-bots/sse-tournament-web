@@ -162,13 +162,15 @@ export default function TournamentStandingsPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <a
-            href={`/api/tournaments/${encodeURIComponent(t.id)}/export`}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2 text-xs font-bold text-slate-200 hover:border-indigo-500"
-          >
-            <Download className="h-3.5 w-3.5 text-emerald-400" />
-            Export CSV
-          </a>
+          {(access.canManageTournament || access.canAssignModerators) && (
+            <a
+              href={`/api/tournaments/${encodeURIComponent(t.id)}/export`}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2 text-xs font-bold text-slate-200 hover:border-indigo-500"
+            >
+              <Download className="h-3.5 w-3.5 text-emerald-400" />
+              Export CSV
+            </a>
+          )}
 
           {canDeclare && (
             <button
