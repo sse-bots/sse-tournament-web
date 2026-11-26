@@ -349,18 +349,14 @@ export function AnnouncementComposer({
     const start = el.selectionStart ?? value.length;
     const end = el.selectionEnd ?? value.length;
     const selected = value.slice(start, end);
-    const needsNewline = start > 0 && value[start - 1] !== "
-";
-    const lead = needsNewline ? "
-" : "";
+    const needsNewline = start > 0 && value[start - 1] !== "\n";
+    const lead = needsNewline ? "\n" : "";
 
     if (selected) {
       const formatted = selected
-        .split("
-")
+        .split("\n")
         .map((ln) => `${prefix}${ln}`)
-        .join("
-");
+        .join("\n");
       const next = `${value.slice(0, start)}${lead}${formatted}${value.slice(end)}`;
       const nextPos = start + lead.length + formatted.length;
       onChange(next);
@@ -444,8 +440,7 @@ export function AnnouncementComposer({
     }
   }
 
-  const previewLines = useMemo(() => value.split("
-"), [value]);
+  const previewLines = useMemo(() => value.split("\n"), [value]);
 
   return (
     <div ref={containerRef} className="relative space-y-2">
