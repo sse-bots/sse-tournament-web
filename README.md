@@ -20,3 +20,18 @@ Multi-server esports tournament manager synced live with **SSE Tournament Bot (`
 ## Deploy
 1. Push `sse-tournament-web` (`sse-tournament-web-v4.zip`) to GitHub for Vercel deployment.
 2. Rename `bot-v4.py` to `bot.py` in your bot repo, verify `WEB_DASHBOARD_URL` and `MONGODB_URI` in Render `.env`, and redeploy.
+
+## Beta design ("New look")
+An opt-in redesign that sits on top of the original UI. Nothing in the original design was removed, and the API routes, database code and services are untouched.
+
+- **Switch:** the **New look · Beta** toggle in the sidebar (on phones: *Menu* sheet). It works in both directions, and the Beta home page also has a *Switch back* link.
+- **Remembered:** the choice is saved in the browser (`localStorage` key `sse-ui-mode-v1`) and applied before first paint, so a Beta user opens straight into Beta next time.
+- **Default:** everyone starts on the original design.
+- **Theme customizer still wins:** Beta uses its own navy + flare palette only while the palette is untouched. Pick any preset, accent, neutral or font and that choice is used instead. Light/Dark modes both work.
+- **Where the code lives:**
+  - `src/lib/ui-mode.ts`: save/load/apply logic
+  - `src/components/UiModeToggle.tsx`: the switch
+  - `src/app/beta-ui.css`: every Beta style, all scoped under `html[data-ui="beta"]`
+  - `src/components/beta/BetaHero.tsx`: new home hero + stat strip
+  - `src/components/beta/BetaBracketTree.tsx`: connected bracket tree (single-elimination only; other formats keep the match list)
+- **Remove Beta entirely:** delete the files above and the small hook-ins marked by `ui-beta-only` / `ui-classic-only` / `sse-*` classes.

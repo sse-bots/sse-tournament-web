@@ -16,16 +16,25 @@ import {
   type MatchForumTag,
   type MatchRow,
   type PowerBracket,
+  type TournamentFormat,
 } from "@/lib/tournament-types";
+import {
+  BetaBracketTree,
+  type TreeRound,
+} from "@/components/beta/BetaBracketTree";
 
 export function BracketBoard({
   matches,
   brackets,
+  format,
 }: {
   matches: MatchRow[];
   brackets: PowerBracket[];
+  /** Optional. Lets the Beta design draw a connected tree for single elimination. */
+  format?: TournamentFormat;
 }) {
   const [selectedBracket, setSelectedBracket] = useState<string>("all");
+  const [betaView, setBetaView] = useState<"tree" | "list">("tree");
   const [proofPreview, setProofPreview] = useState<MatchRow | null>(null);
 
   const filtered = useMemo(() => {
@@ -47,6 +56,35 @@ export function BracketBoard({
       (a, b) => a.week - b.week || a.round - b.round
     );
   }, [filtered]);
+
+  // Beta design only: a connected tree when the rounds form a clean
+  // single-elimination ladder (each round half the size of the one before).
+  const treeRounds = useMemo<TreeRound[] | null>(() => {
+    if (format !== "single_elimination") return null;
+    const byRound = new Map<number, MatchRow[]>();
+    for (const m of filtered) {
+      const r = m.roundNumber || 1;
+      const list = byRound.get(r) || [];
+      list.push(m);
+      byRound.set(r, list);
+    }
+    const rounds: TreeRound[] = Array.from(byRound.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([round, items]) => ({
+        round,
+        items: [...items].sort((a, b) => a.matchNumber - b.matchNumber),
+      }));
+    if (rounds.length < 2) return null;
+    for (let i = 1; i < rounds.length; i++) {
+      if (rounds[i].items.length !== Math.ceil(rounds[i - 1].items.length / 2)) {
+        return null;
+      }
+    }
+    if (rounds[rounds.length - 1].items.length !== 1) return null;
+    return rounds;
+  }, [filtered, format]);
+
+  const showTree = treeRounds !== null && betaView === "tree";
 
   if (matches.length === 0) {
     return (
@@ -94,13 +132,44 @@ export function BracketBoard({
         </div>
       )}
 
-      <div className="flex gap-4 overflow-x-auto pb-3">
+      {treeRounds && (
+        <div className="ui-beta-only">
+          <div className="bx-viewswitch" role="group" aria-label="Bracket view">
+            <button
+              type="button"
+              onClick={() => setBetaView("tree")}
+              className={betaView === "tree" ? "is-on" : ""}
+            >
+              Bracket
+            </button>
+            <button
+              type="button"
+              onClick={() => setBetaView("list")}
+              className={betaView === "list" ? "is-on" : ""}
+            >
+              Match list
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showTree && treeRounds && (
+        <div className="ui-beta-only">
+          <BetaBracketTree rounds={treeRounds} onProof={setProofPreview} />
+        </div>
+      )}
+
+      <div
+        className={`flex gap-4 overflow-x-auto pb-3 ${
+          showTree ? "ui-classic-only" : ""
+        }`}
+      >
         {groups.map((grp) => (
           <div
             key={`${grp.week}-${grp.round}`}
             className="w-[310px] shrink-0 space-y-3 sm:w-[340px]"
           >
-            <div className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-900/80 px-4 py-2.5">
+            <div className="sse-round-head flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-900/80 px-4 py-2.5">
               <span className="text-xs font-extrabold uppercase tracking-wider text-indigo-400">
                 Week {grp.week}
                 {grp.round !== grp.week ? ` · Round ${grp.round}` : ""}
@@ -124,7 +193,7 @@ export function BracketBoard({
                 return (
                   <div
                     key={m.id}
-                    className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/75 shadow-md"
+                    className="sse-match-card overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/75 shadow-md"
                   >
                     <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 bg-slate-950/60 px-3.5 py-2">
                       <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-300">
@@ -158,8 +227,8 @@ export function BracketBoard({
 
                     <div className="divide-y divide-slate-800/70">
                       <div
-                        className={`flex items-center justify-between gap-2 px-3.5 py-2.5 text-xs ${
-                          aWon ? "bg-emerald-500/10" : ""
+                        className={`sse-match-side flex items-center justify-between gap-2 px-3.5 py-2.5 text-xs ${
+                          aWon ? "sse-match-side-won bg-emerald-500/10" : ""
                         }`}
                       >
                         <span
@@ -182,8 +251,8 @@ export function BracketBoard({
                       </div>
 
                       <div
-                        className={`flex items-center justify-between gap-2 px-3.5 py-2.5 text-xs ${
-                          bWon ? "bg-emerald-500/10" : ""
+                        className={`sse-match-side flex items-center justify-between gap-2 px-3.5 py-2.5 text-xs ${
+                          bWon ? "sse-match-side-won bg-emerald-500/10" : ""
                         }`}
                       >
                         <span

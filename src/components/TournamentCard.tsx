@@ -24,7 +24,10 @@ export function TournamentCard({
     href || `/servers/${tournament.guildId}/tournaments/${tournament.id}`;
 
   return (
-    <div className="group relative flex flex-col justify-between overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/70 transition hover:border-indigo-500/60 hover:shadow-xl">
+    <div
+      data-status={tournament.status}
+      className="sse-tcard group relative flex flex-col justify-between overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/70 transition hover:border-indigo-500/60 hover:shadow-xl"
+    >
       <div className="border-b border-slate-800/80 bg-slate-950/50 px-5 py-3.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-700/80 bg-slate-900 px-2.5 py-0.5 text-[11px] font-bold text-slate-200">

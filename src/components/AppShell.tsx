@@ -36,6 +36,7 @@ import { useAuth } from "@/components/AuthContext";
 import { GlobalSyncLoader } from "@/components/GlobalSyncLoader";
 import { FairPlayBadge, RoleBadge } from "@/components/RoleBadge";
 import { ThemeCustomizer } from "@/components/ThemeCustomizer";
+import { UiModeToggle } from "@/components/UiModeToggle";
 import { useWorkspace } from "@/components/WorkspaceContext";
 import { SITE_SETTINGS } from "@/lib/site-settings";
 import { STATUS_META } from "@/lib/tournament-types";
@@ -44,10 +45,15 @@ import {
   PRIMARY_COLORS,
   THEME_PRESETS,
   ThemeState,
-  applyThemeToDocument,
   loadSavedTheme,
   saveThemeState,
 } from "@/lib/theme-config";
+import {
+  UI_MODE_EVENT,
+  applyThemeAndUi,
+  loadUiMode,
+  type UiMode,
+} from "@/lib/ui-mode";
 
 interface NavItem {
   href: string;
@@ -78,26 +84,44 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     ...SITE_SETTINGS.defaultTheme,
   });
 
+  const [uiMode, setUiModeState] = useState<UiMode>("classic");
+
   useEffect(() => {
     const initial = loadSavedTheme();
+    const initialMode = loadUiMode();
     setTheme(initial);
-    applyThemeToDocument(initial);
+    setUiModeState(initialMode);
+    applyThemeAndUi(initial, initialMode);
 
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     function handleSystemChange() {
       const latest = loadSavedTheme();
       if (latest.mode === "system") {
-        applyThemeToDocument(latest);
+        applyThemeAndUi(latest, loadUiMode());
       }
     }
     media.addEventListener("change", handleSystemChange);
-    return () => media.removeEventListener("change", handleSystemChange);
+
+    // Original / Beta design switch (this tab, or another tab via storage)
+    function handleUiModeChange() {
+      const nextMode = loadUiMode();
+      setUiModeState(nextMode);
+      applyThemeAndUi(loadSavedTheme(), nextMode);
+    }
+    window.addEventListener(UI_MODE_EVENT, handleUiModeChange);
+    window.addEventListener("storage", handleUiModeChange);
+
+    return () => {
+      media.removeEventListener("change", handleSystemChange);
+      window.removeEventListener(UI_MODE_EVENT, handleUiModeChange);
+      window.removeEventListener("storage", handleUiModeChange);
+    };
   }, []);
 
   function updateTheme(next: ThemeState) {
     setTheme(next);
     saveThemeState(next);
-    applyThemeToDocument(next);
+    applyThemeAndUi(next, loadUiMode());
   }
 
   useEffect(() => {
@@ -282,9 +306,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         key={item.href}
         href={item.href}
         style={{ animationDelay: `${Math.min(idx * 22, 200)}ms` }}
-        className={`animate-menu-item flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition ${
+        className={`sse-nav-link animate-menu-item flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition ${
           active
-            ? "bg-indigo-600/20 text-indigo-300"
+            ? "sse-nav-active bg-indigo-600/20 text-indigo-300"
             : "text-slate-300 hover:bg-slate-800/70 hover:text-white"
         }`}
       >
@@ -561,6 +585,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="space-y-3 border-t border-slate-800/80 p-3">
+          <UiModeToggle mode={uiMode} />
           {authLoading ? (
             <div className="h-11 animate-pulse rounded-xl bg-slate-800/70" />
           ) : user ? (
@@ -735,7 +760,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               {filteredNav.map((item, i) => renderNavLink(item, i))}
             </div>
 
-            <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
+            <div className="mt-4">
+              <UiModeToggle mode={uiMode} />
+            </div>
+
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
               <div className="min-w-0">
                 <div className="truncate text-sm font-bold text-white">
                   {user ? user.name : "Sign in with SSE Accounts"}

@@ -500,7 +500,11 @@ export default function TournamentMatchesPage() {
 
       {/* BOARD OR OPERATIONS LIST */}
       {view === "board" ? (
-        <BracketBoard matches={filteredMatches} brackets={t.brackets} />
+        <BracketBoard
+          matches={filteredMatches}
+          brackets={t.brackets}
+          format={t.format}
+        />
       ) : filteredMatches.length === 0 ? (
         <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-10 text-center text-xs text-slate-400">
           No matches in this filter.

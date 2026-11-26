@@ -16,6 +16,8 @@ import {
   Zap,
 } from "lucide-react";
 import { TournamentCard } from "@/components/TournamentCard";
+import { BetaHero } from "@/components/beta/BetaHero";
+import { setUiMode } from "@/lib/ui-mode";
 import { useAuth } from "@/components/AuthContext";
 import { SITE_SETTINGS } from "@/lib/site-settings";
 import { QUICKSTART_STEPS } from "@/lib/bot-docs-data";
@@ -53,8 +55,26 @@ export default function HomePage() {
 
   return (
     <div className="space-y-8">
-      <section className="sse-arena-hero sse-grid-pattern relative overflow-hidden rounded-3xl border border-slate-800 p-6 shadow-2xl sm:p-10">
+      {/* Beta design: new hero + stats (hidden in the original design) */}
+      <div className="ui-beta-only">
+        <BetaHero
+          stats={stats}
+          featured={data?.featured ?? []}
+          signedIn={Boolean(user)}
+        />
+      </div>
+
+      {/* Original design hero (hidden when the Beta design is on) */}
+      <section className="ui-classic-only sse-arena-hero sse-grid-pattern relative overflow-hidden rounded-3xl border border-slate-800 p-6 shadow-2xl sm:p-10">
         <div className="relative z-10 max-w-3xl space-y-5">
+          <button
+            type="button"
+            onClick={() => setUiMode("beta")}
+            className="inline-flex items-center gap-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-[11px] font-bold text-amber-300 transition hover:bg-amber-500/20"
+          >
+            <Sparkles className="h-3 w-3" />
+            New look available · Try the Beta design
+          </button>
           <div className="inline-flex items-center gap-2 rounded-full border border-indigo-500/40 bg-indigo-500/15 px-3.5 py-1 text-xs font-bold text-indigo-300">
             <Sparkles className="h-3.5 w-3.5" />
             Multi-Server Esports Manager · Synced with SSE Tournament Bot
@@ -151,7 +171,7 @@ export default function HomePage() {
       <section className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h2 className="text-xl font-extrabold text-white">
+            <h2 className="sse-section-title text-xl font-extrabold text-white">
               Live &amp; Recent Tournaments
             </h2>
             <p className="text-xs text-slate-400">
@@ -212,7 +232,7 @@ export default function HomePage() {
 
       <section className="space-y-4">
         <div>
-          <h2 className="text-xl font-extrabold text-white">
+          <h2 className="sse-section-title text-xl font-extrabold text-white">
             Engineered for Multi-Game Communities
           </h2>
           <p className="text-xs text-slate-400">
@@ -259,7 +279,7 @@ export default function HomePage() {
       <section className="space-y-4 rounded-3xl border border-slate-800 bg-slate-900/60 p-6">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h2 className="text-lg font-extrabold text-white">
+            <h2 className="sse-section-title text-lg font-extrabold text-white">
               6-Step Tournament Bot Workflow
             </h2>
             <p className="text-xs text-slate-400">
