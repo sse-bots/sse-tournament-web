@@ -19,7 +19,7 @@ const createMatchSchema = z.object({
 
 const matchActionSchema = z.object({
   matchId: z.string().min(1),
-  action: z.enum(["approve", "reject", "dispute", "forfeit", "override", "set_status", "edit"]),
+  action: z.enum(["approve", "reject", "dispute", "forfeit", "override", "set_status", "edit", "repair_forum"]),
   winnerSide: z.enum(["A", "B", "DRAW"]).optional(),
   status: z.enum(["scheduled", "ready", "in_progress", "pending_proof", "postponed"]).optional(),
   mapName: z.string().trim().max(80).optional(),
@@ -262,6 +262,29 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
   }
 
   const { action, winnerSide, status, mapName, scheduledAt, note } = parsed.data;
+
+  if (action === "repair_forum") {
+    await matches.updateOne(
+      { _id: mid },
+      {
+        $set: {
+          provisionAttempts: 0,
+          channelCreationError: false,
+          channelCreationErrorMsg: null,
+          updatedAt: now,
+        },
+      }
+    );
+    await writeAuditLog({
+      guildId: String(t.guildId),
+      actorId,
+      action: "match.web_create",
+      targetType: "Match",
+      targetId: String(mid),
+      details: { repair: true, weekNumber: Number(m.weekNumber ?? 1) },
+    });
+    return NextResponse.json({ ok: true });
+  }
 
   if (action === "approve") {
     if (!["pending_review", "disputed"].includes(String(m.status))) {

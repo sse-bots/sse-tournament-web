@@ -9,10 +9,12 @@ import {
   Download,
   Lock,
   Medal,
+  Send,
   Sparkles,
   Trophy,
   X,
 } from "lucide-react";
+import { DiscordChannelPicker } from "@/components/DiscordRolePicker";
 import { useTournamentDetail } from "@/components/TournamentDetailContext";
 import { SCORING_LABELS } from "@/lib/tournament-types";
 
@@ -21,6 +23,8 @@ export default function TournamentStandingsPage() {
   const [bracketFilter, setBracketFilter] = useState<string>("all");
   const [declareOpen, setDeclareOpen] = useState(false);
   const [forceDeclare, setForceDeclare] = useState(false);
+  const [postModalOpen, setPostModalOpen] = useState(false);
+  const [postChannelId, setPostChannelId] = useState("");
 
   const t = data?.tournament;
   const access = data?.access;
@@ -162,6 +166,20 @@ export default function TournamentStandingsPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {access.canManageTournament && (
+            <button
+              type="button"
+              onClick={() => {
+                setPostChannelId(t.announcementChannelId || "");
+                setPostModalOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-500/40 bg-indigo-500/15 px-3.5 py-2 text-xs font-bold text-indigo-300 transition hover:bg-indigo-500/25"
+            >
+              <Send className="h-3.5 w-3.5" />
+              Post to Discord
+            </button>
+          )}
+
           {(access.canManageTournament || access.canAssignModerators) && (
             <a
               href={`/api/tournaments/${encodeURIComponent(t.id)}/export`}
@@ -567,6 +585,73 @@ export default function TournamentStandingsPage() {
               >
                 <CheckCircle2 className="h-4 w-4" />
                 {busy ? "Declaring Results..." : "Confirm & Announce Winners"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+          {postModalOpen && (
+        <div
+          className="fixed inset-0 z-[85] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          onClick={() => setPostModalOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md space-y-4 rounded-3xl border border-slate-700 bg-[#0b1120] p-6 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-extrabold text-white">
+                  Post Live Standings to Discord
+                </h3>
+                <p className="mt-1 text-xs text-slate-400">
+                  Publish the current{" "}
+                  {selectedBracketName
+                    ? `"${selectedBracketName}" bracket`
+                    : "overall"}{" "}
+                  leaderboard in clean Discord Markdown.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPostModalOpen(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <DiscordChannelPicker
+              channels={data.discordChannels || []}
+              value={postChannelId}
+              onChange={setPostChannelId}
+              label="Target Discord Channel"
+              emptyLabel="Use default tournament / leaderboard channel"
+            />
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setPostModalOpen(false)}
+                className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  const res = await runAction({
+                    action: "post_standings",
+                    announcementChannelId: postChannelId || null,
+                    bracketName: selectedBracketName || undefined,
+                  });
+                  if (res.ok) setPostModalOpen(false);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-5 py-2 text-xs font-extrabold text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                <Send className="h-3.5 w-3.5" />
+                {busy ? "Posting..." : "Post Standings"}
               </button>
             </div>
           </div>

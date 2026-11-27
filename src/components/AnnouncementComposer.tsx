@@ -12,6 +12,7 @@ import {
   Italic,
   List,
   Quote,
+  Sparkles,
   Strikethrough,
   Underline,
 } from "lucide-react";
@@ -164,6 +165,7 @@ export function AnnouncementComposer({
   channels = [],
   tournamentName,
   weekNumber,
+  includeHeader = true,
   placeholder = "Write your announcement... Type @ to mention Discord roles or # for channels",
   rows = 4,
   required = false,
@@ -175,6 +177,7 @@ export function AnnouncementComposer({
   channels?: GuildChannelInfo[];
   tournamentName?: string;
   weekNumber?: number | null;
+  includeHeader?: boolean;
   placeholder?: string;
   rows?: number;
   required?: boolean;
@@ -184,6 +187,8 @@ export function AnnouncementComposer({
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [showPreview, setShowPreview] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const templateMenuRef = useRef<HTMLDivElement>(null);
   const [mentionTrigger, setMentionTrigger] = useState<{
     char: "@" | "#";
     startIndex: number;
@@ -262,6 +267,74 @@ export function AnnouncementComposer({
   useEffect(() => {
     setActiveIndex(0);
   }, [mentionTrigger?.query, mentionTrigger?.char]);
+
+  // Close template menu when clicking/tapping outside or pressing Escape
+  useEffect(() => {
+    if (!templatesOpen) return;
+    function handleOutside(e: MouseEvent | TouchEvent) {
+      if (
+        templateMenuRef.current &&
+        !templateMenuRef.current.contains(e.target as Node)
+      ) {
+        setTemplatesOpen(false);
+      }
+    }
+    function handleEsc(e: KeyboardEvent) {
+      if (e.key === "Escape") setTemplatesOpen(false);
+    }
+    document.addEventListener("mousedown", handleOutside);
+    document.addEventListener("touchstart", handleOutside, { passive: true });
+    document.addEventListener("keydown", handleEsc);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      document.removeEventListener("touchstart", handleOutside);
+      document.removeEventListener("keydown", handleEsc);
+    };
+  }, [templatesOpen]);
+
+  const announcementPresets = useMemo(
+    () => [
+      {
+        title: "Registration Open",
+        desc: "Invite players to register with /register",
+        body:
+          "## Registration Is Now Open!\n" +
+          "Entries are officially live for **" +
+          (tournamentName || "this tournament") +
+          "**.\n\n" +
+          "• Run `/register` with your Squad Power values & screenshot\n" +
+          "• Make sure your In-Game Name is accurate\n" +
+          "• Check rules & brackets before spots fill up!",
+      },
+      {
+        title: weekNumber ? `Week ${weekNumber} Matchups Live` : "Matchups Live",
+        desc: "Remind players to play & submit screenshots",
+        body:
+          "## " +
+          (weekNumber ? `Week ${weekNumber} Matches Are Live!` : "Matches Are Live!") +
+          "\nFind your match post in the Week Forum, coordinate a match time with your opponent, and tap the **winner button** + drop your end-screen screenshot once done.",
+      },
+      {
+        title: "24-Hour Deadline Reminder",
+        desc: "Final call before unplayed matches forfeit",
+        body:
+          "## ⏳ 24-Hour Match Deadline Reminder\n" +
+          "All remaining matches must be completed and submitted with screenshot proof within **24 hours**.\n\n" +
+          "> Need help or opponent is unresponsive? Tap **Report Issue** inside your match post so moderators can step in.",
+      },
+      {
+        title: "Schedule / Rule Update",
+        desc: "Clean formatted update block",
+        body:
+          "## Important Update\n" +
+          "Please take note of the following schedule & rule update:\n\n" +
+          "• **Maps:** \n" +
+          "• **Deadline:** \n" +
+          "• **Notes:** ",
+      },
+    ],
+    [tournamentName, weekNumber]
+  );
 
   // Close mention popup when clicking/tapping outside
   useEffect(() => {
@@ -531,6 +604,49 @@ export function AnnouncementComposer({
           )}
         </div>
 
+        <div className="flex items-center gap-1.5">
+          <div ref={templateMenuRef} className="relative">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => setTemplatesOpen((v) => !v)}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 px-2 py-1 text-[11px] font-bold text-slate-300 transition hover:border-indigo-500/60 hover:text-white disabled:opacity-45"
+            >
+              <Sparkles className="h-3 w-3 text-amber-400" />
+              Templates
+            </button>
+
+            {templatesOpen && (
+              <div className="absolute right-0 top-full z-[80] mt-1.5 w-64 overflow-hidden rounded-2xl border border-slate-700/90 bg-[#0b1120] p-1.5 shadow-2xl shadow-black/60">
+                <div className="px-2.5 py-1.5 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                  Quick Templates
+                </div>
+                {announcementPresets.map((preset) => (
+                  <button
+                    key={preset.title}
+                    type="button"
+                    onClick={() => {
+                      onChange(
+                        value.trim()
+                          ? `${value.trim()}\n\n${preset.body}`
+                          : preset.body
+                      );
+                      setTemplatesOpen(false);
+                    }}
+                    className="block w-full rounded-xl px-2.5 py-2 text-left transition hover:bg-slate-800/80"
+                  >
+                    <div className="text-xs font-bold text-white">
+                      {preset.title}
+                    </div>
+                    <div className="text-[10px] text-slate-400">
+                      {preset.desc}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
         <button
           type="button"
           onClick={() => setShowPreview((v) => !v)}
@@ -550,6 +666,7 @@ export function AnnouncementComposer({
             </>
           )}
         </button>
+        </div>
       </div>
 
       {/* Textarea + Floating @Role / #Channel Autocomplete */}
@@ -667,17 +784,21 @@ export function AnnouncementComposer({
             Live Discord Preview
           </div>
           <div className="space-y-1.5 text-slate-200">
-            <div className="text-base font-black text-white">
-              📣 {tournamentName || "Tournament Announcement"}
-            </div>
-            <div className="text-[11px] text-slate-400">
-              {weekNumber
-                ? `Week ${weekNumber} · Official Announcement`
-                : "Official Announcement"}
-            </div>
-            <div className="text-[11px] text-slate-600">
-              ──────────────────────────
-            </div>
+            {includeHeader && (
+              <>
+                <div className="text-base font-black text-white">
+                  📣 {tournamentName || "Tournament Announcement"}
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  {weekNumber
+                    ? `Week ${weekNumber} · Official Announcement`
+                    : "Official Announcement"}
+                </div>
+                <div className="text-[11px] text-slate-600">
+                  ──────────────────────────
+                </div>
+              </>
+            )}
             <div className="space-y-1 py-1 leading-relaxed">
               {value.trim() ? (
                 previewLines.map((ln, idx) => {
@@ -725,9 +846,11 @@ export function AnnouncementComposer({
                 </span>
               )}
             </div>
-            <div className="text-[11px] text-slate-600">
-              ──────────────────────────
-            </div>
+            {includeHeader && (
+              <div className="text-[11px] text-slate-600">
+                ──────────────────────────
+              </div>
+            )}
           </div>
         </div>
       )}

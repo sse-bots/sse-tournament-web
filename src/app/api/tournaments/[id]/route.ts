@@ -28,6 +28,8 @@ const patchSchema = z.object({
       "trigger_matchmaking",
       "close_week",
       "reopen_week",
+      "remind_week_pending",
+      "post_standings",
       "close_tournament",
       "send_announcement",
       "start",
@@ -77,6 +79,7 @@ const patchSchema = z.object({
   weekNumber: z.number().int().min(1).max(52).optional(),
   broadcastToMatches: z.boolean().optional(),
   alsoPostServerChannel: z.boolean().optional(),
+  includeHeader: z.boolean().optional(),
   declareResults: z.boolean().optional(),
   reason: z.string().trim().max(240).optional(),
   force: z.boolean().optional(),
@@ -391,6 +394,55 @@ export async function PATCH(
   }
 
   // Send Announcement (Server channel, Locked Week Announcement post, and/or Broadcast to All Week Match Posts)
+  if (d.action === "remind_week_pending") {
+    const wk = d.weekNumber || 1;
+    await writeAuditLog({
+      guildId: String(t.guildId),
+      actorId,
+      action: "week.remind_pending",
+      targetType: "Tournament",
+      targetId: id,
+      details: { weekNumber: wk, reason: d.reason || "" },
+    });
+    return NextResponse.json({
+      ok: true,
+      message: `Reminder ping queued for all unfinished matches in Week ${wk}! Bot will notify players in their match posts (~15s).`,
+    });
+  }
+
+  if (d.action === "post_standings") {
+    const gcfg = await guildConfig.findOne({ guildId: String(t.guildId) });
+    const channelsObj = (gcfg?.channels || {}) as Record<string, string>;
+    const resolvedChannel =
+      d.announcementChannelId ||
+      (typeof t.announcementChannelId === "string" ? t.announcementChannelId : null) ||
+      (typeof gcfg?.announcementChannelId === "string" ? gcfg.announcementChannelId : null) ||
+      channelsObj.leaderboard ||
+      channelsObj.announcements ||
+      null;
+    if (!resolvedChannel) {
+      return NextResponse.json(
+        { error: "Select a Discord channel to post the live standings." },
+        { status: 400 }
+      );
+    }
+    await writeAuditLog({
+      guildId: String(t.guildId),
+      actorId,
+      action: "standings.web_post",
+      targetType: "Tournament",
+      targetId: id,
+      details: {
+        channelId: resolvedChannel,
+        bracketName: d.bracketName || null,
+      },
+    });
+    return NextResponse.json({
+      ok: true,
+      message: "Live standings queued to Discord! Bot will post the leaderboard within ~15 seconds.",
+    });
+  }
+
   if (d.action === "send_announcement") {
     if (!d.announcementMessage) {
       return NextResponse.json({ error: "Enter an announcement message." }, { status: 400 });
@@ -426,6 +478,7 @@ export async function PATCH(
         weekNumber: d.weekNumber || null,
         broadcastToMatches: Boolean(d.broadcastToMatches),
         alsoPostServerChannel: Boolean(d.alsoPostServerChannel),
+        includeHeader: d.includeHeader !== false,
       },
     });
     return NextResponse.json({

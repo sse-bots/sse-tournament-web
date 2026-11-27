@@ -15,9 +15,11 @@ import {
   Crown,
   Download,
   Gamepad2,
+  Link2,
   Lock,
   Pause,
   Play,
+  Radio,
   RefreshCw,
   ShieldAlert,
   Swords,
@@ -91,6 +93,8 @@ export function TournamentDetailProvider({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [autoSync, setAutoSync] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // Close Tournament Modal state
   const [closeModalOpen, setCloseModalOpen] = useState(false);
@@ -128,6 +132,29 @@ export function TournamentDetailProvider({
     setLoading(true);
     refresh();
   }, [refresh]);
+
+  // Optional 15-second live auto-refresh while the tab is visible
+  useEffect(() => {
+    if (!autoSync) return;
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible" && !busy) {
+        refresh();
+      }
+    }, 15000);
+    return () => window.clearInterval(id);
+  }, [autoSync, busy, refresh]);
+
+  async function handleCopyShareLink() {
+    try {
+      const url = `${window.location.origin}/servers/${guildId}/tournaments/${tournamentId}`;
+      await navigator.clipboard.writeText(url);
+      setCopiedLink(true);
+      showToast("Tournament share link copied to clipboard!");
+      window.setTimeout(() => setCopiedLink(false), 2000);
+    } catch {
+      showToast("Could not access clipboard.");
+    }
+  }
 
   const runAction = useCallback(
     async (body: Record<string, unknown>, successMsg?: string) => {
@@ -326,6 +353,32 @@ export function TournamentDetailProvider({
                     className={`h-3.5 w-3.5 ${busy || loading ? "animate-spin" : ""}`}
                   />
                   {busy || loading ? "Syncing..." : "Sync"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAutoSync((v) => !v)}
+                  title="Automatically refresh live tournament data every 15 seconds"
+                  className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                    autoSync
+                      ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300"
+                      : "border-slate-700 bg-slate-900/90 text-slate-300 hover:border-indigo-500 hover:text-white"
+                  }`}
+                >
+                  <Radio
+                    className={`h-3.5 w-3.5 ${autoSync ? "animate-pulse text-emerald-400" : "text-slate-400"}`}
+                  />
+                  {autoSync ? "Live (15s)" : "Auto-Sync"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCopyShareLink}
+                  title="Copy direct link to this tournament"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-2 text-xs font-bold text-slate-200 transition hover:border-indigo-500"
+                >
+                  <Link2 className="h-3.5 w-3.5 text-indigo-400" />
+                  {copiedLink ? "Copied!" : "Share"}
                 </button>
 
                 {isStaff && (

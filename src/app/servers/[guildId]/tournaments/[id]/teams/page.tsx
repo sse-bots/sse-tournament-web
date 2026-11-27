@@ -2,14 +2,21 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Crown, Lock, Search, Shield, Users, UsersRound } from "lucide-react";
+import { Ban, CheckCircle2, Crown, Lock, Search, Shield, Users, UsersRound } from "lucide-react";
+import { ConfirmModal } from "@/components/ConfirmModal";
 import { CopyButton } from "@/components/CopyButton";
 import { useTournamentDetail } from "@/components/TournamentDetailContext";
+import type { TeamRow } from "@/lib/tournament-types";
 
 export default function TournamentTeamsPage() {
-  const { guildId, data } = useTournamentDetail();
+  const { guildId, data, refresh, showToast, setError } = useTournamentDetail();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("active");
+  const [teamActionTarget, setTeamActionTarget] = useState<{
+    team: TeamRow;
+    action: "disqualify" | "reinstate";
+  } | null>(null);
+  const [teamBusy, setTeamBusy] = useState(false);
 
   const t = data?.tournament;
   const teams = useMemo(() => data?.teams || [], [data?.teams]);
@@ -34,6 +41,42 @@ export default function TournamentTeamsPage() {
   }, [teams, statusFilter, search]);
 
   if (!data || !t) return null;
+  const canManage = data.access.canManageTournament;
+
+  async function handleConfirmTeamAction(reasonText: string) {
+    if (!teamActionTarget) return;
+    setTeamBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/tournaments/${encodeURIComponent(t!.id)}/teams`,
+        {
+          method: "PATCH",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            teamId: teamActionTarget.team.id,
+            action: teamActionTarget.action,
+            reason: reasonText,
+          }),
+        }
+      );
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(j.error || "Team update failed.");
+        return;
+      }
+      showToast(
+        teamActionTarget.action === "disqualify"
+          ? `Disqualified team "${teamActionTarget.team.name}".`
+          : `Reinstated team "${teamActionTarget.team.name}".`
+      );
+      setTeamActionTarget(null);
+      await refresh();
+    } finally {
+      setTeamBusy(false);
+    }
+  }
 
   if (t.mode !== "team") {
     return (
@@ -243,12 +286,51 @@ export default function TournamentTeamsPage() {
                   </div>
                 </div>
 
-                {tm.verifiedPower > 0 && (
-                  <div className="mt-3 flex items-center justify-between border-t border-slate-800/80 pt-2.5 text-[11px] text-slate-400">
-                    <span>Verified Team Power</span>
-                    <strong className="font-mono text-emerald-400">
-                      {tm.verifiedPower} SP
-                    </strong>
+                {(tm.verifiedPower > 0 || canManage) && (
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/80 pt-2.5 text-[11px] text-slate-400">
+                    <div>
+                      {tm.verifiedPower > 0 && (
+                        <span>
+                          Verified Power:{" "}
+                          <strong className="font-mono text-emerald-400">
+                            {tm.verifiedPower} SP
+                          </strong>
+                        </span>
+                      )}
+                    </div>
+                    {canManage && (
+                      <div>
+                        {tm.status === "active" ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTeamActionTarget({
+                                team: tm,
+                                action: "disqualify",
+                              })
+                            }
+                            className="inline-flex items-center gap-1 rounded-lg border border-rose-500/35 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-300 hover:bg-rose-500/20"
+                          >
+                            <Ban className="h-3 w-3" />
+                            Disqualify Team
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTeamActionTarget({
+                                team: tm,
+                                action: "reinstate",
+                              })
+                            }
+                            className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/35 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold text-emerald-300 hover:bg-emerald-500/20"
+                          >
+                            <CheckCircle2 className="h-3 w-3" />
+                            Reinstate Team
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -256,6 +338,35 @@ export default function TournamentTeamsPage() {
           })}
         </div>
       )}
+          <ConfirmModal
+        open={Boolean(teamActionTarget)}
+        title={
+          teamActionTarget?.action === "disqualify"
+            ? `Disqualify "${teamActionTarget.team.name}"?`
+            : `Reinstate "${teamActionTarget?.team.name || ""}"?`
+        }
+        description={
+          teamActionTarget?.action === "disqualify"
+            ? "This team will be marked disqualified while preserving existing match records for audit history."
+            : "This team will be restored to active status in the tournament."
+        }
+        confirmLabel={
+          teamActionTarget?.action === "disqualify"
+            ? "Disqualify Team"
+            : "Reinstate Team"
+        }
+        variant={teamActionTarget?.action === "disqualify" ? "danger" : "primary"}
+        inputLabel={
+          teamActionTarget?.action === "disqualify"
+            ? "Disqualification Reason"
+            : "Note (Optional)"
+        }
+        inputPlaceholder="Provide a brief reason for the audit log..."
+        inputRequired={teamActionTarget?.action === "disqualify"}
+        busy={teamBusy}
+        onClose={() => setTeamActionTarget(null)}
+        onConfirm={handleConfirmTeamAction}
+      />
     </div>
   );
 }

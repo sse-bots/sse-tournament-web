@@ -10,12 +10,15 @@ import {
   Layers,
   Search,
   SlidersHorizontal,
+  Plus,
   Trash2,
+  UserPlus,
   Users,
   X,
   XCircle,
   Lock,
 } from "lucide-react";
+import { ConfirmModal } from "@/components/ConfirmModal";
 import { CustomSelect } from "@/components/CustomSelect";
 import { useTournamentDetail } from "@/components/TournamentDetailContext";
 import type { RegistrationRow } from "@/lib/tournament-types";
@@ -36,6 +39,16 @@ export default function TournamentPlayersPage() {
   const [adjustValue, setAdjustValue] = useState("");
   const [targetBracketId, setTargetBracketId] = useState("");
   const [reason, setReason] = useState("");
+
+  // Bulk approve & manual player onboarding state
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [addPlayerOpen, setAddPlayerOpen] = useState(false);
+  const [addingPlayer, setAddingPlayer] = useState(false);
+  const [manualUserId, setManualUserId] = useState("");
+  const [manualIgn, setManualIgn] = useState("");
+  const [manualPower, setManualPower] = useState("");
+  const [manualAutoApprove, setManualAutoApprove] = useState(true);
 
   const t = data?.tournament;
   const access = data?.access;
@@ -128,8 +141,108 @@ export default function TournamentPlayersPage() {
     }
   }
 
+  async function handleBulkApprovePending() {
+    setBulkBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/tournaments/${encodeURIComponent(t!.id)}/registrations`,
+        {
+          method: "PATCH",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "bulk_approve_power" }),
+        }
+      );
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(j.error || "Bulk approval failed.");
+        return;
+      }
+      setBulkConfirmOpen(false);
+      showToast(j.message || "Bulk approval complete!");
+      await refresh();
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function handleManualAddPlayer(e: React.FormEvent) {
+    e.preventDefault();
+    const cleanedId = manualUserId.trim().replace(/[^0-9]/g, "");
+    if (!cleanedId || !manualIgn.trim()) return;
+    setAddingPlayer(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/tournaments/${encodeURIComponent(t!.id)}/registrations`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId: cleanedId,
+            inGameId: manualIgn.trim(),
+            squadPower: Number(manualPower || 0),
+            autoApprove: manualAutoApprove,
+          }),
+        }
+      );
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(j.error || "Could not add player.");
+        return;
+      }
+      setAddPlayerOpen(false);
+      setManualUserId("");
+      setManualIgn("");
+      setManualPower("");
+      showToast(j.message || "Player registered!");
+      await refresh();
+    } finally {
+      setAddingPlayer(false);
+    }
+  }
+
   return (
     <div className="space-y-5">
+      {/* Staff Quick Action Bar: Bulk Approve & Manual Registration */}
+      {canManage && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="text-xs text-slate-300">
+            <strong className="font-extrabold text-white">{regs.length}</strong>{" "}
+            registered ·{" "}
+            <strong className="font-extrabold text-amber-300">
+              {pendingCount}
+            </strong>{" "}
+            pending Squad Power review
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {pendingCount > 0 && (
+              <button
+                type="button"
+                disabled={bulkBusy}
+                onClick={() => setBulkConfirmOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-extrabold text-white shadow-md hover:bg-emerald-500 disabled:opacity-50"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Bulk Approve All ({pendingCount})
+              </button>
+            )}
+            {!["completed", "cancelled", "archived"].includes(t.status) && (
+              <button
+                type="button"
+                onClick={() => setAddPlayerOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-extrabold text-white shadow-md hover:bg-indigo-500"
+              >
+                <UserPlus className="h-3.5 w-3.5" />
+                Add Player Manually
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Filter Bar */}
       <div className="flex flex-col gap-3 rounded-3xl border border-slate-800 bg-slate-900/70 p-4 sm:flex-row sm:items-center">
         <div className="relative flex-1">
@@ -541,6 +654,116 @@ export default function TournamentPlayersPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+          <ConfirmModal
+        open={bulkConfirmOpen}
+        title={`Bulk Approve ${pendingCount} Pending Player${pendingCount === 1 ? "" : "s"}?`}
+        description="Every pending player whose claimed Squad Power fits a configured bracket (excluding your own registration) will be approved and assigned automatically."
+        confirmLabel={bulkBusy ? "Approving..." : `Approve All (${pendingCount})`}
+        variant="primary"
+        busy={bulkBusy}
+        onClose={() => setBulkConfirmOpen(false)}
+        onConfirm={handleBulkApprovePending}
+      />
+
+      {addPlayerOpen && (
+        <div
+          className="fixed inset-0 z-[85] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          onClick={() => setAddPlayerOpen(false)}
+        >
+          <form
+            onSubmit={handleManualAddPlayer}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md space-y-4 rounded-3xl border border-slate-700 bg-[#0b1120] p-6 shadow-2xl"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="flex items-center gap-2 text-base font-extrabold text-white">
+                  <Plus className="h-4 w-4 text-indigo-400" />
+                  Register Player Manually
+                </h3>
+                <p className="mt-0.5 text-[11px] text-slate-400">
+                  Add a participant directly from the web dashboard without requiring Discord /register.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAddPlayerOpen(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-200">
+                  Discord User ID *
+                </label>
+                <input
+                  required
+                  value={manualUserId}
+                  onChange={(e) => setManualUserId(e.target.value)}
+                  placeholder="e.g. 123456789012345678"
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-200">
+                  In-Game Name / IGN *
+                </label>
+                <input
+                  required
+                  value={manualIgn}
+                  onChange={(e) => setManualIgn(e.target.value)}
+                  placeholder="Player's in-game name"
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-200">
+                  Squad Power (SP) *
+                </label>
+                <input
+                  required
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={manualPower}
+                  onChange={(e) => setManualPower(e.target.value)}
+                  placeholder="e.g. 3850"
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs font-semibold text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={manualAutoApprove}
+                  onChange={(e) => setManualAutoApprove(e.target.checked)}
+                  className="h-4 w-4 accent-indigo-500"
+                />
+                Auto-approve Squad Power &amp; assign SP bracket immediately
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setAddPlayerOpen(false)}
+                className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={addingPlayer}
+                className="rounded-xl bg-indigo-600 px-5 py-2 text-xs font-extrabold text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                {addingPlayer ? "Adding..." : "Add Player"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>
