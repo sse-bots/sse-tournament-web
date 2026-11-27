@@ -325,6 +325,18 @@ export default function TournamentMatchesPage() {
               const declaredInWk = wkMatches.filter(
                 (m) => m.forumTag === "declared"
               ).length;
+              const weekPending = wkMatches.filter(
+                (m) =>
+                  !m.isBye &&
+                  [
+                    "scheduled",
+                    "ready",
+                    "in_progress",
+                    "pending_proof",
+                    "rejected",
+                    "postponed",
+                  ].includes(m.status)
+              ).length;
               const isClosed = wk.status === "closed";
 
               return (
