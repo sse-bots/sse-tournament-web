@@ -40,6 +40,7 @@ export default function TournamentOverviewPage() {
   const [announceChan, setAnnounceChan] = useState("");
   const [broadcastToMatches, setBroadcastToMatches] = useState(true);
   const [alsoServerChannel, setAlsoServerChannel] = useState(false);
+  const [includeAnnounceHeader, setIncludeAnnounceHeader] = useState(true);
 
   if (!data) return null;
   const {
@@ -69,6 +70,7 @@ export default function TournamentOverviewPage() {
       weekNumber,
       broadcastToMatches: isWeekTarget ? broadcastToMatches : false,
       alsoPostServerChannel: isWeekTarget ? alsoServerChannel : false,
+      includeHeader: includeAnnounceHeader,
     });
     if (res.ok) setAnnounceMsg("");
   }
@@ -583,11 +585,22 @@ export default function TournamentOverviewPage() {
                       ? Number(announceTarget.replace("week:", ""))
                       : null
                   }
+                  includeHeader={includeAnnounceHeader}
                   required
                   disabled={busy}
                   rows={4}
                   placeholder="Write your announcement... Type @ to mention Discord roles or use Bold, Italic, Headings above"
                 />
+
+                <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs font-semibold text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={includeAnnounceHeader}
+                    onChange={(e) => setIncludeAnnounceHeader(e.target.checked)}
+                    className="h-4 w-4 accent-indigo-500"
+                  />
+                  Include tournament name, &quot;Official Announcement&quot; header &amp; dividers
+                </label>
 
                 <div className="flex justify-end">
                   <button

@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
+  Bell,
   Calendar,
   CheckCircle2,
   Edit3,
@@ -18,6 +19,8 @@ import {
   Megaphone,
   MessageSquare,
   Plus,
+  RefreshCw,
+  Search,
   Send,
   ShieldAlert,
   Swords,
@@ -46,6 +49,8 @@ export default function TournamentMatchesPage() {
   const [view, setView] = useState<ViewMode>("list");
   const [filter, setFilter] = useState<MatchFilter>("all");
   const [weekFilter, setWeekFilter] = useState<string>("all");
+  const [matchSearch, setMatchSearch] = useState<string>("");
+  const [remindWeekNum, setRemindWeekNum] = useState<number | null>(null);
   const [matchBusyId, setMatchBusyId] = useState<string | null>(null);
   const [proofPreview, setProofPreview] = useState<MatchRow | null>(null);
 
@@ -54,6 +59,7 @@ export default function TournamentMatchesPage() {
   const [weekAnnounceMsg, setWeekAnnounceMsg] = useState("");
   const [weekBroadcastAll, setWeekBroadcastAll] = useState(true);
   const [weekAlsoServer, setWeekAlsoServer] = useState(false);
+  const [weekIncludeHeader, setWeekIncludeHeader] = useState(true);
   const [closeWeekNum, setCloseWeekNum] = useState<number | null>(null);
 
   // Create custom match modal
@@ -99,6 +105,7 @@ export default function TournamentMatchesPage() {
   }, [t?.weeks, matches]);
 
   const filteredMatches = useMemo(() => {
+    const q = matchSearch.trim().toLowerCase();
     return matches.filter((m) => {
       if (weekFilter !== "all" && String(m.weekNumber || 1) !== weekFilter) {
         return false;
@@ -106,9 +113,17 @@ export default function TournamentMatchesPage() {
       if (filter !== "all" && m.forumTag !== filter) {
         return false;
       }
-      return true;
+      if (!q) return true;
+      return (
+        m.sideALabel.toLowerCase().includes(q) ||
+        m.sideBLabel.toLowerCase().includes(q) ||
+        m.mapName.toLowerCase().includes(q) ||
+        (m.bracketName || "").toLowerCase().includes(q) ||
+        `match ${m.weekMatchNumber}`.includes(q) ||
+        `#${m.weekMatchNumber}`.includes(q)
+      );
     });
-  }, [matches, filter, weekFilter]);
+  }, [matches, filter, weekFilter, matchSearch]);
 
   if (!data || !t || !access) return null;
 
@@ -229,6 +244,7 @@ export default function TournamentMatchesPage() {
       announcementMessage: weekAnnounceMsg.trim(),
       broadcastToMatches: weekBroadcastAll,
       alsoPostServerChannel: weekAlsoServer,
+      includeHeader: weekIncludeHeader,
     });
     if (res.ok) {
       setWeekAnnounceNum(null);
@@ -309,6 +325,18 @@ export default function TournamentMatchesPage() {
               const declaredInWk = wkMatches.filter(
                 (m) => m.forumTag === "declared"
               ).length;
+              const weekPending = wkMatches.filter(
+                (m) =>
+                  !m.isBye &&
+                  [
+                    "scheduled",
+                    "ready",
+                    "in_progress",
+                    "pending_proof",
+                    "rejected",
+                    "postponed",
+                  ].includes(m.status)
+              ).length;
               const isClosed = wk.status === "closed";
 
               return (
@@ -375,12 +403,25 @@ export default function TournamentMatchesPage() {
                           setWeekAnnounceMsg("");
                           setWeekBroadcastAll(true);
                           setWeekAlsoServer(false);
+                          setWeekIncludeHeader(true);
                         }}
                         className="inline-flex items-center gap-1 rounded-xl border border-indigo-500/40 bg-indigo-500/15 px-3 py-1.5 text-[11px] font-bold text-indigo-300 hover:bg-indigo-500/20"
                       >
                         <Megaphone className="h-3.5 w-3.5" />
                         Announce to Week {wk.weekNumber}
                       </button>
+
+                      {!isClosed && weekPending > 0 && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setRemindWeekNum(wk.weekNumber)}
+                          className="inline-flex items-center gap-1 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-1.5 text-[11px] font-bold text-amber-300 hover:bg-amber-500/20 disabled:opacity-50"
+                        >
+                          <Bell className="h-3.5 w-3.5" />
+                          Remind Pending ({weekPending})
+                        </button>
+                      )}
 
                       {!isClosed ? (
                         <button
@@ -466,6 +507,27 @@ export default function TournamentMatchesPage() {
                 })),
               ]}
             />
+          )}
+        </div>
+
+        {/* Match Search Input */}
+        <div className="relative flex-1 sm:max-w-xs">
+          <Search className="pointer-events-none absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-500" />
+          <input
+            value={matchSearch}
+            onChange={(e) => setMatchSearch(e.target.value)}
+            placeholder="Search player, team, map, or #..."
+            className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2 pl-8 pr-7 text-xs text-white placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none"
+          />
+          {matchSearch && (
+            <button
+              type="button"
+              onClick={() => setMatchSearch("")}
+              className="absolute right-2 top-2 rounded-md p-0.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+              aria-label="Clear search"
+            >
+              <X className="h-3 w-3" />
+            </button>
           )}
         </div>
 
@@ -634,13 +696,31 @@ export default function TournamentMatchesPage() {
                       )}
                     </div>
 
-                    {m.channelCreationError && (
-                      <div className="flex items-center gap-1.5 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-300">
-                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                        <span>
-                          Forum post creation failed:{" "}
-                          {m.channelCreationErrorMsg || "Check bot permissions."}
+                    {(m.channelCreationError || (!m.threadUrl && !m.isBye)) && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-300">
+                        <span className="flex items-center gap-1.5">
+                          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                          {m.channelCreationError
+                            ? `Forum post failed: ${m.channelCreationErrorMsg || "Check bot permissions."}`
+                            : "Discord forum post pending creation..."}
                         </span>
+                        {canManage && (
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() =>
+                              patchMatch(
+                                m.id,
+                                { action: "repair_forum" },
+                                `Queued Discord forum post retry for Week ${m.weekNumber || 1} · Match #${m.weekMatchNumber} (~15s).`
+                              )
+                            }
+                            className="inline-flex items-center gap-1 rounded-lg border border-amber-400/40 bg-amber-500/20 px-2.5 py-1 text-[10px] font-extrabold text-amber-200 hover:bg-amber-500/30 disabled:opacity-50"
+                          >
+                            <RefreshCw className="h-3 w-3" />
+                            Retry Forum Post
+                          </button>
+                        )}
                       </div>
                     )}
 
@@ -802,6 +882,7 @@ export default function TournamentMatchesPage() {
               channels={data.discordChannels || []}
               tournamentName={t.name}
               weekNumber={weekAnnounceNum}
+              includeHeader={weekIncludeHeader}
               required
               disabled={busy}
               rows={4}
@@ -809,6 +890,15 @@ export default function TournamentMatchesPage() {
             />
 
             <div className="space-y-2">
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs font-semibold text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={weekIncludeHeader}
+                  onChange={(e) => setWeekIncludeHeader(e.target.checked)}
+                  className="h-4 w-4 accent-indigo-500"
+                />
+                Include tournament name, &quot;Week {weekAnnounceNum} · Official Announcement&quot; header &amp; dividers
+              </label>
               <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs font-semibold text-slate-200">
                 <input
                   type="checkbox"
@@ -1258,6 +1348,31 @@ export default function TournamentMatchesPage() {
         </div>
       )}
           <ConfirmModal
+        open={remindWeekNum !== null}
+        title={remindWeekNum !== null ? `Ping Pending Matches in Week ${remindWeekNum}?` : "Remind Pending Matches"}
+        description={
+          remindWeekNum !== null
+            ? `SSE Bot will ping the assigned players inside every unfinished match post in Week ${remindWeekNum} to submit their results.`
+            : ""
+        }
+        confirmLabel="Send Reminder Ping"
+        variant="primary"
+        inputLabel="Custom Reminder Message (Optional)"
+        inputPlaceholder="e.g. Please finish your match and drop screenshot proof before tonight!"
+        busy={busy}
+        onClose={() => setRemindWeekNum(null)}
+        onConfirm={async (noteText) => {
+          if (remindWeekNum === null) return;
+          const res = await runAction({
+            action: "remind_week_pending",
+            weekNumber: remindWeekNum,
+            reason: noteText || undefined,
+          });
+          if (res.ok) setRemindWeekNum(null);
+        }}
+      />
+
+      <ConfirmModal
         open={closeWeekNum !== null}
         title={closeWeekNum !== null ? `Close Week ${closeWeekNum}?` : "Close Week"}
         description={
